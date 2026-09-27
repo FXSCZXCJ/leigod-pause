@@ -36,6 +36,8 @@ pub fn run(state: Arc<AppState>, cfg: Arc<SharedConfig>, rx: Receiver<MonCmd>) {
     let mut steam_roots: Vec<String> = Vec::new();
     let mut steam_loaded = false;
     let mut next_steam_refresh = Instant::now();
+    // 启动自动检测：首次循环时，无游戏运行且未暂停 → 立即暂停
+    let mut startup_check_pending = true;
 
     log(&state, "监控线程启动");
     // 启动时自动查询一次账号状态（query_info 内部会记录成败并更新 token_valid）
@@ -141,6 +143,7 @@ pub fn run(state: Arc<AppState>, cfg: Arc<SharedConfig>, rx: Receiver<MonCmd>) {
         // 5) 进程扫描与状态机
         sys.refresh_processes();
         let game = find_game(&sys, &conf.games, &steam_roots, conf.auto_steam);
+        let game_running = game.is_some();
 
         let prev = mode_label(&mode);
         match game {
@@ -208,6 +211,24 @@ pub fn run(state: Arc<AppState>, cfg: Arc<SharedConfig>, rx: Receiver<MonCmd>) {
                     set_status(&state, MonitorStatus::Idle);
                 }
             },
+        }
+
+        // 启动自动检测：无游戏运行且账号未暂停 → 立即暂停（已暂停会被 do_pause 静默跳过）
+        if startup_check_pending {
+            startup_check_pending = false;
+            if !game_running {
+                match actions::do_pause(&state) {
+                    Ok((true, msg)) => {
+                        log(&state, &format!("启动检测：未运行游戏，已自动暂停（{msg}）"));
+                        state
+                            .push_notify("启动检测", &format!("未检测到游戏，已自动暂停：{msg}"));
+                    }
+                    Ok((false, _)) => log(&state, "启动检测：账号已处于暂停状态，无需处理"),
+                    Err(_) => log(&state, "启动检测：暂停未成功，已挂起稍后重试"),
+                }
+            } else {
+                log(&state, "启动检测：检测到游戏正在运行，不暂停");
+            }
         }
 
         std::thread::sleep(Duration::from_secs(conf.update.max(1)));

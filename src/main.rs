@@ -38,6 +38,7 @@ fn main() {
         Some("code") => cli_code(&config_path, args.get(2).map(|s| s.as_str())),
         Some("status") => cli_status(&config_path),
         Some("steam") => cli_steam(),
+        Some("autostart") => cli_autostart(args.get(2).map(|s| s.as_str())),
         Some("--help") | Some("-h") | Some("help") => print_help(),
         None => run_gui(&config_path),
         Some(other) => {
@@ -152,6 +153,36 @@ fn cli_steam() {
     println!("发现 {} 个 Steam 游戏：", games.len());
     for g in &games {
         println!("  {:<40} {}", g.name, g.dir);
+    }
+}
+
+/// 开机自启开关（与界面/配置同一套逻辑，含启动文件夹回退）
+fn cli_autostart(arg: Option<&str>) {
+    match arg {
+        Some("on") | Some("1") => match config::set_autostart(true) {
+            Ok(msg) => println!("{msg}"),
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        },
+        Some("off") | Some("0") => match config::set_autostart(false) {
+            Ok(msg) => println!("{msg}"),
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        },
+        None | Some("status") => {
+            println!(
+                "开机自启: {}",
+                if config::is_autostart() { "已开启" } else { "未开启" }
+            )
+        }
+        Some(other) => {
+            eprintln!("未知参数 {other}，用法: autostart [on|off|status]");
+            std::process::exit(2);
+        }
     }
 }
 

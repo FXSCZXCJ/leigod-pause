@@ -210,7 +210,7 @@ impl App {
         }
         if self.settings_msg.is_empty() {
             self.settings_msg = match config::set_autostart(self.autostart) {
-                Ok(()) => "设置已保存并生效".into(),
+                Ok(desc) => format!("设置已保存：{desc}"),
                 Err(e) => format!("开机自启设置失败: {e}"),
             };
         }

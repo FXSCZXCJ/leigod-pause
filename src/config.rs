@@ -154,33 +154,132 @@ impl Config {
     }
 }
 
-/// 开机自启：写/删 HKCU\...\Run 键，返回是否成功
-pub fn set_autostart(enable: bool) -> Result<(), String> {
-    use winreg::enums::{HKEY_CURRENT_USER, KEY_SET_VALUE};
-    use winreg::RegKey;
+fn startup_lnk_path() -> PathBuf {
+    let base = std::env::var("APPDATA").unwrap_or_default();
+    PathBuf::from(base)
+        .join(r"Microsoft\Windows\Start Menu\Programs\Startup")
+        .join("legod-pause.lnk")
+}
+
+/// 用 PowerShell WScript.Shell 创建启动文件夹快捷方式
+fn create_startup_lnk(target: &str) -> Result<(), String> {
+    let lnk = startup_lnk_path();
+    let workdir = std::path::Path::new(target)
+        .parent()
+        .map(|d| d.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let script = format!(
+        "$ws = New-Object -ComObject WScript.Shell; $s = $ws.CreateShortcut('{}'); $s.TargetPath = '{}'; $s.WorkingDirectory = '{}'; $s.Save()",
+        lnk.display(),
+        target,
+        workdir
+    );
+    let out = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &script])
+        .output()
+        .map_err(|e| format!("调用 PowerShell 失败: {e}"))?;
+    if out.status.success() && lnk.is_file() {
+        Ok(())
+    } else {
+        Err(format!(
+            "创建快捷方式失败: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))
+    }
+}
+
+/// 开机自启：① 注册表 Run 键 ② 被安全软件拦截（os error 5）时回退
+/// 启动文件夹快捷方式。返回实际采用方式的描述。
+pub fn set_autostart(enable: bool) -> Result<String, String> {
     let exe = std::env::current_exe()
         .map_err(|e| format!("获取程序路径失败: {e}"))?
         .to_string_lossy()
         .to_string();
-    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-    let run = hkcu
-        .open_subkey_with_flags(r"Software\Microsoft\Windows\CurrentVersion\Run", KEY_SET_VALUE)
-        .map_err(|e| format!("打开注册表失败: {e}"))?;
     if enable {
-        run.set_value("LegodPause", &exe).map_err(|e| format!("写入自启失败: {e}"))
+        // ① 注册表 Run 键
+        match write_run_key(&exe) {
+            Ok(()) => Ok("开机自启已开启（注册表 Run 键）".into()),
+            Err(e) => {
+                // ② 回退：启动文件夹快捷方式（360 等安全软件常拦注册表自启动写入）
+                match create_startup_lnk(&exe) {
+                    Ok(()) => Ok("开机自启已开启（注册表被安全软件拦截，已改用启动文件夹快捷方式）".into()),
+                    Err(e2) => Err(format!(
+                        "两种自启方式都失败：注册表 {e}；启动文件夹 {e2}。\
+                         可能是安全软件（如 360）拦截，请把本程序加入信任列表后重试"
+                    )),
+                }
+            }
+        }
     } else {
-        match run.delete_value("LegodPause") {
-            Ok(()) => Ok(()),
-            Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(format!("删除自启失败: {e}")),
+        let mut problems: Vec<String> = Vec::new();
+        match delete_run_key() {
+            Ok(()) => {}
+            Err(RunKeyResult::NotFound) => {}
+            Err(RunKeyResult::Denied(e)) => {
+                problems.push(format!("删除注册表 Run 键被拒绝: {e}"))
+            }
+        }
+        let lnk = startup_lnk_path();
+        if lnk.is_file() {
+            match std::fs::remove_file(&lnk) {
+                Ok(()) => {}
+                Err(e) => problems.push(format!("删除启动快捷方式失败: {e}")),
+            }
+        }
+        if problems.is_empty() {
+            Ok("开机自启已关闭".into())
+        } else {
+            Err(format!("关闭失败：{}（可能被安全软件拦截）", problems.join("；")))
         }
     }
 }
 
-/// 查询当前是否已设置开机自启
+enum RunKeyResult {
+    NotFound,
+    Denied(String),
+}
+
+fn write_run_key(exe: &str) -> Result<(), String> {
+    use winreg::enums::{HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_SET_VALUE};
+    use winreg::RegKey;
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let run = hkcu
+        .open_subkey_with_flags(
+            r"Software\Microsoft\Windows\CurrentVersion\Run",
+            KEY_SET_VALUE | KEY_QUERY_VALUE,
+        )
+        .map_err(|e| format!("打开注册表失败: {e}"))?;
+    // 已是目标值就跳过写入（规避安全软件对重复写入的拦截）
+    if let Ok(cur) = run.get_value::<String, _>("LegodPause") {
+        if cur == exe {
+            return Ok(());
+        }
+    }
+    run.set_value("LegodPause", &exe)
+        .map_err(|e| format!("{e} (os error {:?})", e.raw_os_error().unwrap_or(0)))
+}
+
+fn delete_run_key() -> Result<(), RunKeyResult> {
+    use winreg::enums::{HKEY_CURRENT_USER, KEY_SET_VALUE};
+    use winreg::RegKey;
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let run = hkcu
+        .open_subkey_with_flags(r"Software\Microsoft\Windows\CurrentVersion\Run", KEY_SET_VALUE)
+        .map_err(|e| RunKeyResult::Denied(format!("{e}")))?;
+    match run.delete_value("LegodPause") {
+        Ok(()) => Ok(()),
+        Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => Err(RunKeyResult::NotFound),
+        Err(e) => Err(RunKeyResult::Denied(format!("{e}"))),
+    }
+}
+
+/// 查询当前是否已设置开机自启（注册表或启动文件夹任一存在即视为开启）
 pub fn is_autostart() -> bool {
     use winreg::enums::HKEY_CURRENT_USER;
     use winreg::RegKey;
+    if startup_lnk_path().is_file() {
+        return true;
+    }
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
     hkcu.open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Run")
         .and_then(|k| k.get_value::<String, _>("LegodPause"))
