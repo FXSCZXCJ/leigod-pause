@@ -7,7 +7,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::actions;
-use crate::config::Config;
 use crate::monitor::MonCmd;
 use crate::state::{log, AppState};
 
@@ -92,17 +91,5 @@ pub fn start_tray_threads(state: Arc<AppState>, mon_tx: std::sync::mpsc::Sender<
 }
 
 fn open_leigod(state: &Arc<AppState>) {
-    let path = Config::load(&state.config_path).lepath;
-    if path.is_empty() {
-        state.push_notify("打开雷神失败", "config.ini 未配置 path（雷神客户端路径）");
-        return;
-    }
-    // 直接 spawn，避免经 cmd 传参时路径反斜杠被转义处理吃掉
-    match std::process::Command::new(&path).spawn() {
-        Ok(_) => log(state, "已启动雷神客户端"),
-        Err(e) => {
-            log(state, &format!("启动雷神失败: {e}"));
-            state.push_notify("打开雷神失败", &format!("{e}"));
-        }
-    }
+    crate::actions::open_leigod(state);
 }

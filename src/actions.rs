@@ -256,10 +256,140 @@ pub fn force_pause_for_shutdown(state: &AppState) -> String {
     "暂停请求未成功，已尽力尝试".into()
 }
 
+/// 打开雷神客户端：① 注册表自动定位 ② 回退 config.ini 的 path ③ 都失败才报错。
+/// 注册表命中成功启动后会把路径回写 config.ini（下次更快）。
+pub fn open_leigod(state: &AppState) {
+    let mut failures: Vec<String> = Vec::new();
+
+    // ① 注册表：卸载表里找雷神（DisplayName 含 雷神/leigod）
+    match find_leigod_in_registry() {
+        Some(p) => match std::process::Command::new(&p).spawn() {
+            Ok(_) => {
+                log(state, &format!("已通过注册表路径启动雷神客户端: {p}"));
+                let cfg = reload_config(state);
+                if cfg.lepath != p {
+                    let mut cfg = reload_config(state);
+                    cfg.lepath = p.clone();
+                    if let Err(e) = cfg.save(&state.config_path) {
+                        log(state, &format!("雷神路径回写配置失败: {e}"));
+                    }
+                }
+                return;
+            }
+            Err(e) => failures.push(format!("注册表路径 {p} 启动失败: {e}")),
+        },
+        None => failures.push("注册表未找到雷神安装信息".into()),
+    }
+
+    // ② 回退：config.ini 的 path
+    let cfg_path = reload_config(state).lepath;
+    if !cfg_path.is_empty() {
+        if std::path::Path::new(&cfg_path).is_file() {
+            match std::process::Command::new(&cfg_path).spawn() {
+                Ok(_) => {
+                    log(state, &format!("已通过配置路径启动雷神客户端: {cfg_path}"));
+                    return;
+                }
+                Err(e) => failures.push(format!("配置路径 {cfg_path} 启动失败: {e}")),
+            }
+        } else {
+            failures.push(format!("配置路径文件不存在: {cfg_path}"));
+        }
+    }
+
+    // ③ 报错
+    let msg = failures.join("；");
+    log(state, &format!("打开雷神失败: {msg}"));
+    state.push_notify("打开雷神失败", &msg);
+}
+
+/// 从卸载表解析雷神客户端 exe 路径
+fn find_leigod_in_registry() -> Option<String> {
+    use std::path::PathBuf;
+    use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ};
+    use winreg::RegKey;
+
+    const UNINSTALL: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall";
+    const UNINSTALL_WOW: &str = r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall";
+    let roots = [
+        (HKEY_LOCAL_MACHINE, UNINSTALL),
+        (HKEY_LOCAL_MACHINE, UNINSTALL_WOW),
+        (HKEY_CURRENT_USER, UNINSTALL),
+    ];
+
+    for (hive, root) in roots {
+        let Ok(key) = RegKey::predef(hive).open_subkey_with_flags(root, KEY_READ) else {
+            continue;
+        };
+        for sub in key.enum_keys().flatten() {
+            let Ok(sk) = key.open_subkey_with_flags(&sub, KEY_READ) else {
+                continue;
+            };
+            let display: String = sk.get_value("DisplayName").unwrap_or_default();
+            if !(display.contains("雷神") || display.to_lowercase().contains("leigod")) {
+                continue;
+            }
+            // 候选 1：DisplayIcon（形如 "D:\...\leigod_launcher.exe,0"）
+            let icon: String = sk.get_value("DisplayIcon").unwrap_or_default();
+            if let Some(p) = displayicon_to_exe(&icon) {
+                if std::path::Path::new(&p).is_file() {
+                    return Some(p);
+                }
+            }
+            // 候选 2：InstallLocation + 已知入口名
+            let loc: String = sk.get_value("InstallLocation").unwrap_or_default();
+            if loc.is_empty() {
+                continue;
+            }
+            for name in ["leigod_launcher.exe", "leigod.exe"] {
+                let p = PathBuf::from(&loc).join(name);
+                if p.is_file() {
+                    return Some(p.to_string_lossy().into_owned());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// DisplayIcon 值转 exe 路径：剥引号与 ",0" 图标索引
+fn displayicon_to_exe(icon: &str) -> Option<String> {
+    let s = icon.trim().trim_matches('"');
+    let s = match s.rfind(',') {
+        Some(i) if s[i + 1..].trim().chars().all(|c| c.is_ascii_digit()) => &s[..i],
+        _ => s,
+    };
+    let s = s.trim().trim_matches('"').trim();
+    if s.to_lowercase().ends_with(".exe") {
+        Some(s.to_string())
+    } else {
+        None
+    }
+}
+
 fn mask_phone(p: &str) -> String {
     if p.len() >= 7 {
         format!("{}****{}", &p[..3], &p[p.len() - 2..])
     } else {
         p.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn displayicon_parsing() {
+        assert_eq!(
+            displayicon_to_exe(r#""D:\Program Files (x86)\LeiGod_Acc\leigod_launcher.exe,0""#).unwrap(),
+            r"D:\Program Files (x86)\LeiGod_Acc\leigod_launcher.exe"
+        );
+        assert_eq!(
+            displayicon_to_exe("D:\\a b\\leigod.exe,0").unwrap(),
+            "D:\\a b\\leigod.exe"
+        );
+        assert!(displayicon_to_exe(r"C:\x\icon.ico").is_none());
+        assert!(displayicon_to_exe("").is_none());
     }
 }
