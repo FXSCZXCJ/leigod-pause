@@ -37,14 +37,24 @@ pub struct App {
     page: Page,
     settings_loaded: bool,
     // 设置页编辑缓冲
-    games_text: String,
+    game_rules: Vec<String>,
+    new_rule: String,
     grace: u64,
     update: u64,
     lepath: String,
     http_port: u16,
     autostart: bool,
     auto_recover: bool,
+    auto_steam: bool,
     settings_msg: String,
+    // Steam 扫描
+    steam_games: Arc<Mutex<Vec<crate::steam::SteamGame>>>,
+    steam_scanning: Arc<std::sync::atomic::AtomicBool>,
+    steam_scanned: Arc<std::sync::atomic::AtomicBool>,
+    // 运行中的程序扫描
+    proc_list: Arc<Mutex<Vec<(String, String)>>>,
+    proc_scanning: Arc<std::sync::atomic::AtomicBool>,
+    proc_scanned: Arc<std::sync::atomic::AtomicBool>,
 
     // 登录页
     phone: String,
@@ -106,14 +116,22 @@ impl App {
             logged_first_frame: false,
             page: Page::Status,
             settings_loaded: false,
-            games_text: String::new(),
+            game_rules: Vec::new(),
+            new_rule: String::new(),
             grace: 180,
             update: 1,
             lepath: String::new(),
             http_port: 18100,
             autostart: true,
             auto_recover: false,
+            auto_steam: true,
             settings_msg: String::new(),
+            steam_games: Arc::new(Mutex::new(Vec::new())),
+            steam_scanning: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            steam_scanned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            proc_list: Arc::new(Mutex::new(Vec::new())),
+            proc_scanning: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            proc_scanned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             phone: String::new(),
             sms_code: String::new(),
             token_paste: String::new(),
@@ -169,13 +187,14 @@ impl App {
 
     fn load_settings_buf(&mut self) {
         let cfg = self.cfg.read().unwrap().clone();
-        self.games_text = cfg.games.join(", ");
+        self.game_rules = cfg.games.clone();
         self.grace = cfg.grace;
         self.update = cfg.update;
         self.lepath = cfg.lepath.clone();
         self.http_port = cfg.http_port;
         self.autostart = config::is_autostart();
         self.auto_recover = cfg.auto_recover;
+        self.auto_steam = cfg.auto_steam;
         self.settings_loaded = true;
     }
 
@@ -183,17 +202,18 @@ impl App {
         {
             let mut cfg = self.cfg.write().unwrap();
             cfg.games = self
-                .games_text
-                .replace('，', ",")
-                .split(',')
+                .game_rules
+                .iter()
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
                 .collect();
+            self.game_rules = cfg.games.clone();
             cfg.grace = self.grace.clamp(10, 600);
             cfg.update = self.update.max(1);
             cfg.lepath = self.lepath.trim().trim_matches('"').to_string();
             cfg.http_port = self.http_port;
             cfg.auto_recover = self.auto_recover;
+            cfg.auto_steam = self.auto_steam;
             let path = self.state.config_path.clone();
             match cfg.save(&path) {
                 Ok(()) => {}
@@ -401,63 +421,278 @@ impl App {
         ui.colored_label(egui::Color32::LIGHT_BLUE, format!("最近操作：{last_api}"));
     }
 
+    fn add_rule(&mut self, rule: String) {
+        let rule = rule.trim().to_string();
+        if rule.is_empty() {
+            return;
+        }
+        let dup = self
+            .game_rules
+            .iter()
+            .any(|g| g.eq_ignore_ascii_case(&rule));
+        if dup {
+            self.settings_msg = format!("规则已存在：{rule}");
+            return;
+        }
+        self.game_rules.push(rule.clone());
+        self.settings_msg = format!("已添加（点「保存并应用」生效）：{rule}");
+    }
+
+    fn spawn_steam_scan(&mut self) {
+        if self.steam_scanning.load(Ordering::SeqCst) {
+            return;
+        }
+        self.steam_scanning.store(true, Ordering::SeqCst);
+        let games_slot = self.steam_games.clone();
+        let scanned = self.steam_scanned.clone();
+        let scanning = self.steam_scanning.clone();
+        let ctx = self.ctx.clone();
+        let state = self.state.clone();
+        std::thread::spawn(move || {
+            let games = crate::steam::installed_games();
+            *games_slot.lock().unwrap() = games;
+            scanned.store(true, Ordering::SeqCst);
+            scanning.store(false, Ordering::SeqCst);
+            ctx.request_repaint();
+            drop(state);
+        });
+    }
+
+    fn spawn_proc_scan(&mut self) {
+        if self.proc_scanning.load(Ordering::SeqCst) {
+            return;
+        }
+        self.proc_scanning.store(true, Ordering::SeqCst);
+        let list_slot = self.proc_list.clone();
+        let scanned = self.proc_scanned.clone();
+        let scanning = self.proc_scanning.clone();
+        let ctx = self.ctx.clone();
+        std::thread::spawn(move || {
+            let mut sys = sysinfo::System::new();
+            sys.refresh_processes();
+            let mut rows: Vec<(String, String)> = Vec::new();
+            for (_pid, proc) in sys.processes() {
+                let Some(exe) = proc.exe() else { continue };
+                let exe_str = exe.to_string_lossy().to_string();
+                let lower = exe_str.to_lowercase();
+                // 排除系统目录、自身、无路径进程
+                if lower.starts_with(r"c:\windows\")
+                    || lower.ends_with("legod-pause.exe")
+                    || exe_str.is_empty()
+                {
+                    continue;
+                }
+                let name = proc.name().to_string();
+                if name.is_empty() || name.ends_with(".tmp") {
+                    continue;
+                }
+                if let Some(dir) = exe.parent() {
+                    let dir = dir.to_string_lossy().to_string();
+                    if !rows
+                        .iter()
+                        .any(|(n, d)| d == &dir && *n == name)
+                    {
+                        rows.push((name, dir));
+                    }
+                }
+            }
+            rows.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+            rows.truncate(400);
+            *list_slot.lock().unwrap() = rows;
+            scanned.store(true, Ordering::SeqCst);
+            scanning.store(false, Ordering::SeqCst);
+            ctx.request_repaint();
+        });
+    }
+
     fn ui_settings(&mut self, ui: &mut egui::Ui) {
-        egui::Grid::new("settings_grid")
-            .num_columns(2)
-            .spacing([8.0, 8.0])
-            .show(ui, |ui| {
-                ui.label("游戏进程名（逗号分隔）");
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.games_text)
-                        .desired_width(280.0)
-                        .hint_text("如：GTA5, Overwatch, notepad"),
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            ui.heading("游戏规则");
+            ui.small("进程名规则：进程名包含该名称即触发；目录规则：从该目录启动的程序视为游戏。");
+            ui.add_space(4.0);
+
+            egui::ScrollArea::vertical()
+                .id_salt("rules_list")
+                .max_height(150.0)
+                .show(ui, |ui| {
+                    let mut to_remove: Option<usize> = None;
+                    for (i, rule) in self.game_rules.iter().enumerate() {
+                        ui.horizontal(|ui| {
+                            if rule.contains(':') || rule.starts_with('\\') {
+                                ui.monospace(format!("📁 {rule}"));
+                            } else {
+                                ui.label(format!("🎮 {rule}"));
+                            }
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui.small_button("删除").clicked() {
+                                        to_remove = Some(i);
+                                    }
+                                },
+                            );
+                        });
+                    }
+                    if let Some(i) = to_remove {
+                        self.game_rules.remove(i);
+                    }
+                });
+            if self.game_rules.is_empty() {
+                ui.colored_label(
+                    egui::Color32::YELLOW,
+                    "列表为空：不会自动暂停任何游戏，请添加规则或开启 Steam 自动识别。",
                 );
-                ui.end_row();
+            }
 
-                ui.label("宽限时长（秒）");
-                ui.add(egui::DragValue::new(&mut self.grace).range(10..=600).suffix(" 秒"));
-                ui.end_row();
-
-                ui.label("轮询间隔（秒）");
-                ui.add(egui::DragValue::new(&mut self.update).range(1..=60));
-                ui.end_row();
-
-                ui.label("雷神客户端路径");
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
                 ui.add(
-                    egui::TextEdit::singleline(&mut self.lepath)
-                        .desired_width(280.0)
-                        .hint_text(r"C:\Program Files (x86)\LeiGod_Acc\leigod.exe"),
+                    egui::TextEdit::singleline(&mut self.new_rule)
+                        .desired_width(260.0)
+                        .hint_text("进程名，如 GTA5"),
                 );
-                ui.end_row();
-
-                ui.label("验证码接口端口");
-                ui.add(egui::DragValue::new(&mut self.http_port).range(1024..=65535));
-                ui.end_row();
-
-                ui.label("开机自启");
-                ui.checkbox(&mut self.autostart, "");
-                ui.end_row();
-
-                ui.label("游戏启动时自动恢复加速");
-                ui.checkbox(&mut self.auto_recover, "");
-                ui.end_row();
+                if ui.button("添加进程名").clicked() {
+                    let r = self.new_rule.clone();
+                    self.new_rule.clear();
+                    self.add_rule(r);
+                }
             });
 
-        ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            if ui.button("保存并应用").clicked() {
-                self.save_settings();
+            ui.add_space(8.0);
+            ui.separator();
+            ui.heading("Steam 自动识别");
+            ui.checkbox(
+                &mut self.auto_steam,
+                "Steam 库内运行的程序自动视为游戏（推荐）",
+            );
+            ui.horizontal(|ui| {
+                let scanning = self.steam_scanning.load(Ordering::SeqCst);
+                if ui
+                    .add_enabled(!scanning, egui::Button::new("扫描已安装的 Steam 游戏"))
+                    .clicked()
+                {
+                    self.spawn_steam_scan();
+                }
+                if scanning {
+                    ui.small("扫描中…");
+                }
+            });
+            if self.steam_scanned.load(Ordering::SeqCst) {
+                let games = self.steam_games.lock().unwrap().clone();
+                if games.is_empty() {
+                    ui.small("未找到 Steam 安装或已安装的游戏。");
+                } else {
+                    ui.small(format!("发现 {} 个 Steam 游戏：", games.len()));
+                    egui::ScrollArea::vertical()
+                        .id_salt("steam_list")
+                        .max_height(180.0)
+                        .show(ui, |ui| {
+                            for g in &games {
+                                ui.horizontal(|ui| {
+                                    ui.label(format!("🎮 {}", g.name));
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            if ui.small_button("添加").clicked() {
+                                                self.add_rule(g.dir.clone());
+                                            }
+                                        },
+                                    );
+                                });
+                            }
+                        });
+                }
             }
-            if ui.button("还原显示").clicked() {
-                self.load_settings_buf();
-                self.settings_msg.clear();
+
+            ui.add_space(8.0);
+            ui.separator();
+            ui.heading("快速添加（运行中的程序）");
+            ui.horizontal(|ui| {
+                let scanning = self.proc_scanning.load(Ordering::SeqCst);
+                if ui
+                    .add_enabled(!scanning, egui::Button::new("刷新运行中的程序"))
+                    .clicked()
+                {
+                    self.spawn_proc_scan();
+                }
+                if scanning {
+                    ui.small("扫描中…");
+                }
+            });
+            if self.proc_scanned.load(Ordering::SeqCst) {
+                let rows = self.proc_list.lock().unwrap().clone();
+                egui::ScrollArea::vertical()
+                    .id_salt("proc_list")
+                    .max_height(180.0)
+                    .show(ui, |ui| {
+                        for (name, dir) in &rows {
+                            ui.horizontal(|ui| {
+                                ui.label(format!("⚙ {name}"));
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        if ui.small_button("添加").clicked() {
+                                            self.add_rule(dir.clone());
+                                        }
+                                    },
+                                );
+                            });
+                        }
+                    });
             }
+
+            ui.add_space(8.0);
+            ui.separator();
+            ui.heading("常规设置");
+            egui::Grid::new("settings_grid")
+                .num_columns(2)
+                .spacing([8.0, 8.0])
+                .show(ui, |ui| {
+                    ui.label("宽限时长（秒）");
+                    ui.add(egui::DragValue::new(&mut self.grace).range(10..=600).suffix(" 秒"));
+                    ui.end_row();
+
+                    ui.label("轮询间隔（秒）");
+                    ui.add(egui::DragValue::new(&mut self.update).range(1..=60));
+                    ui.end_row();
+
+                    ui.label("雷神客户端路径");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.lepath)
+                            .desired_width(280.0)
+                            .hint_text(r"C:\Program Files (x86)\LeiGod_Acc\leigod.exe"),
+                    );
+                    ui.end_row();
+
+                    ui.label("验证码接口端口");
+                    ui.add(egui::DragValue::new(&mut self.http_port).range(1024..=65535));
+                    ui.end_row();
+
+                    ui.label("开机自启");
+                    ui.checkbox(&mut self.autostart, "");
+                    ui.end_row();
+
+                    ui.label("游戏启动时自动恢复加速");
+                    ui.checkbox(&mut self.auto_recover, "");
+                    ui.end_row();
+                });
+
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.button("保存并应用").clicked() {
+                    self.save_settings();
+                }
+                if ui.button("还原显示").clicked() {
+                    self.load_settings_buf();
+                    self.settings_msg.clear();
+                }
+            });
+            if !self.settings_msg.is_empty() {
+                ui.colored_label(egui::Color32::LIGHT_GREEN, &self.settings_msg);
+            }
+            ui.add_space(8.0);
+            ui.small("提示：端口修改需重启程序生效；宽限期内启动游戏会取消暂停；保存后 Steam 自动识别立即生效。");
         });
-        if !self.settings_msg.is_empty() {
-            ui.colored_label(egui::Color32::LIGHT_GREEN, &self.settings_msg);
-        }
-        ui.add_space(8.0);
-        ui.small("提示：端口修改需重启程序生效；宽限期内启动游戏会取消暂停。");
     }
 
     fn ui_login(&mut self, ui: &mut egui::Ui) {

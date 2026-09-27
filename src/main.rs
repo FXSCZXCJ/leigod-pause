@@ -18,6 +18,7 @@ mod gui;
 mod monitor;
 mod shutdown;
 mod state;
+mod steam;
 mod tray;
 
 use std::sync::mpsc;
@@ -36,6 +37,7 @@ fn main() {
         Some("sms") => cli_sms(&config_path),
         Some("code") => cli_code(&config_path, args.get(2).map(|s| s.as_str())),
         Some("status") => cli_status(&config_path),
+        Some("steam") => cli_steam(),
         Some("--help") | Some("-h") | Some("help") => print_help(),
         None => run_gui(&config_path),
         Some(other) => {
@@ -138,6 +140,19 @@ fn cli_status(config_path: &std::path::Path) {
     let url = format!("http://127.0.0.1:{port}/status");
     let resp = ureq_like_get(&url);
     println!("{resp}");
+}
+
+/// 列出本机已安装的 Steam 游戏（验证扫描）
+fn cli_steam() {
+    let games = steam::installed_games();
+    if games.is_empty() {
+        println!("未找到 Steam 安装或已安装的游戏。");
+        return;
+    }
+    println!("发现 {} 个 Steam 游戏：", games.len());
+    for g in &games {
+        println!("  {:<40} {}", g.name, g.dir);
+    }
 }
 
 /// 极简 GET（CLI 用，避免再引 http 客户端）

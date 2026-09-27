@@ -33,6 +33,8 @@ pub fn run(state: Arc<AppState>, cfg: Arc<SharedConfig>, rx: Receiver<MonCmd>) {
     let mut next_pending_retry = Instant::now();
     let mut last_cfg_mtime: Option<std::time::SystemTime> = None;
     let mut last_token_version = state.token_version.load(Ordering::SeqCst);
+    let mut steam_roots: Vec<String> = Vec::new();
+    let mut steam_loaded = false;
 
     log(&state, "监控线程启动");
     set_status(&state, MonitorStatus::Idle);
@@ -86,6 +88,31 @@ pub fn run(state: Arc<AppState>, cfg: Arc<SharedConfig>, rx: Receiver<MonCmd>) {
 
         let conf = cfg.read().map(|c| c.clone()).unwrap_or_default();
 
+        // Steam 库目录只加载一次（或热加载配置后刷新开关状态）
+        if !steam_loaded {
+            steam_loaded = true;
+            steam_roots = if conf.auto_steam {
+                crate::steam::library_common_dirs()
+                    .into_iter()
+                    .map(|p| {
+                        let mut s = p.to_string_lossy().to_lowercase();
+                        if !s.ends_with('\\') {
+                            s.push('\\');
+                        }
+                        s
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            if !steam_roots.is_empty() {
+                log(&state, &format!("Steam 自动识别已启用，检测到 {} 个库目录", steam_roots.len()));
+            }
+        }
+        if !conf.auto_steam && !steam_roots.is_empty() {
+            steam_roots.clear();
+        }
+
         // 4) 挂起重试（网络失败/token失效期间每 15s 一次）
         if state.pending_pause.load(Ordering::SeqCst)
             && !matches!(mode, Mode::InGame(_))
@@ -99,7 +126,7 @@ pub fn run(state: Arc<AppState>, cfg: Arc<SharedConfig>, rx: Receiver<MonCmd>) {
 
         // 5) 进程扫描与状态机
         sys.refresh_processes();
-        let game = find_game(&sys, &conf.games);
+        let game = find_game(&sys, &conf.games, &steam_roots, conf.auto_steam);
 
         let prev = mode_label(&mode);
         match game {
@@ -168,22 +195,71 @@ pub fn run(state: Arc<AppState>, cfg: Arc<SharedConfig>, rx: Receiver<MonCmd>) {
     }
 }
 
-/// 返回匹配到的游戏名（大小写不敏感，匹配规则与旧版一致：进程名包含 "{name}.exe"）
-fn find_game(sys: &System, games: &[String]) -> Option<String> {
-    for g in games {
-        let g = g.trim();
-        if g.is_empty() {
-            continue;
+/// 匹配到游戏的判定顺序：显式进程名规则 → 显式目录规则 → Steam 库自动识别
+fn find_game(
+    sys: &System,
+    games: &[String],
+    steam_roots: &[String],
+    auto_steam: bool,
+) -> Option<String> {
+    // 目录规则：包含盘符或 UNC 前缀的条目
+    let dir_rules: Vec<(String, String)> = games
+        .iter()
+        .filter(|g| g.contains(':') || g.starts_with('\\'))
+        .map(|g| {
+            let mut d = g.trim().to_lowercase();
+            if !d.ends_with('\\') {
+                d.push('\\');
+            }
+            // 显示名取目录最后一段
+            let label = g
+                .trim_end_matches(['\\', '/'])
+                .rsplit(['\\', '/'])
+                .next()
+                .unwrap_or(g)
+                .to_string();
+            (d, label)
+        })
+        .collect();
+    let name_rules: Vec<(String, String)> = games
+        .iter()
+        .filter(|g| !(g.contains(':') || g.starts_with('\\')))
+        .map(|g| {
+            let g = g.trim();
+            let needle = if g.to_lowercase().ends_with(".exe") {
+                g.to_lowercase()
+            } else {
+                format!("{}.exe", g.to_lowercase())
+            };
+            (needle, g.to_string())
+        })
+        .collect();
+
+    for (_pid, proc) in sys.processes() {
+        let pname = proc.name().to_lowercase();
+        let exe = proc
+            .exe()
+            .map(|p| p.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+
+        // 1) 显式进程名规则（与旧版一致：进程名包含 "{name}.exe"）
+        for (needle, label) in &name_rules {
+            if !needle.is_empty() && pname.contains(needle) {
+                return Some(label.clone());
+            }
         }
-        let needle = if g.to_lowercase().ends_with(".exe") {
-            g.to_lowercase()
-        } else {
-            format!("{}.exe", g.to_lowercase())
-        };
-        for (_pid, proc) in sys.processes() {
-            let pname = proc.name().to_lowercase();
-            if pname.contains(&needle) {
-                return Some(g.to_string());
+        // 2) 显式目录规则：进程 exe 位于该目录之下
+        for (dir, label) in &dir_rules {
+            if !exe.is_empty() && exe.starts_with(dir) {
+                return Some(label.clone());
+            }
+        }
+        // 3) Steam 自动识别：exe 位于任意库的 steamapps/common 之下
+        if auto_steam && !exe.is_empty() {
+            for root in steam_roots {
+                if exe.starts_with(root) {
+                    return Some(pname.trim_end_matches(".exe").to_string());
+                }
             }
         }
     }
