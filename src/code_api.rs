@@ -62,6 +62,10 @@ fn handle_http(state: &Arc<AppState>, mut req: tiny_http::Request) {
 fn route(state: &Arc<AppState>, method: &str, url: &str, body: &str) -> (u16, serde_json::Value) {
     match (method, url) {
         ("GET", "/health") => (200, json!({"ok": true})),
+        ("POST", "/show") => {
+            state.native_show_window();
+            (200, json!({"ok": true, "message": "已请求显示主窗口"}))
+        }
         ("GET", "/status") => (200, status_payload(state)),
         ("POST", "/token/sms") => match actions::trigger_sms(state, None) {
             Ok(info) => (

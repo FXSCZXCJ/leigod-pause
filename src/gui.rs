@@ -14,10 +14,6 @@ use crate::monitor::MonCmd;
 use crate::state::{log, AppState, MonitorStatus};
 use crate::tray;
 
-/// Windows 通知使用的已注册 AppUserModelID（借用 PowerShell 的，保证能弹出来）
-const TOAST_AUMID: &str =
-    "{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe";
-
 #[derive(PartialEq)]
 enum Page {
     Status,
@@ -31,8 +27,12 @@ pub struct App {
     state: Arc<AppState>,
     cfg: Arc<RwLock<Config>>,
     mon_tx: Sender<MonCmd>,
-    tray: Option<tray::Tray>,
+    tray: Option<tray_icon::TrayIcon>,
     tooltip_cache: String,
+    /// 原生窗口句柄（ShowWindow 兜底用）
+    native_hwnd: Option<isize>,
+    /// 是否记录过首帧日志
+    logged_first_frame: bool,
 
     page: Page,
     settings_loaded: bool,
@@ -55,6 +55,39 @@ pub struct App {
 }
 
 impl App {
+    /// 加载系统中文字体（egui 默认字体不含 CJK 字形，会显示方框）
+    fn install_cjk_font(ctx: &egui::Context) {
+        const CANDIDATES: &[&str] = &[
+            r"C:\Windows\Fonts\msyh.ttc",   // 微软雅黑
+            r"C:\Windows\Fonts\msyhl.ttc",
+            r"C:\Windows\Fonts\simhei.ttf", // 黑体
+            r"C:\Windows\Fonts\simsun.ttc", // 宋体
+            r"C:\Windows\Fonts\Deng.ttf",   // 等线
+        ];
+        for p in CANDIDATES {
+            if let Ok(bytes) = std::fs::read(p) {
+                let mut fonts = egui::FontDefinitions::default();
+                fonts.font_data.insert(
+                    "cjk".into(),
+                    std::sync::Arc::new(egui::FontData::from_owned(bytes)),
+                );
+                // 中文字体放最前，默认字体保留在后面兜底
+                fonts
+                    .families
+                    .get_mut(&egui::FontFamily::Proportional)
+                    .unwrap()
+                    .insert(0, "cjk".into());
+                fonts
+                    .families
+                    .get_mut(&egui::FontFamily::Monospace)
+                    .unwrap()
+                    .insert(0, "cjk".into());
+                ctx.set_fonts(fonts);
+                return;
+            }
+        }
+    }
+
     pub fn new(
         cc: &eframe::CreationContext<'_>,
         state: Arc<AppState>,
@@ -69,6 +102,8 @@ impl App {
             mon_tx,
             tray: None,
             tooltip_cache: String::new(),
+            native_hwnd: None,
+            logged_first_frame: false,
             page: Page::Status,
             settings_loaded: false,
             games_text: String::new(),
@@ -86,15 +121,30 @@ impl App {
             login_busy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
         app.tray = tray::build(&app.state.monitor.lock().unwrap().tooltip_text()).ok();
+        // 捕获原生窗口句柄，供原生 ShowWindow 使用
+        app.native_hwnd = (|| {
+            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+            let h = cc.window_handle().ok()?;
+            match h.as_raw() {
+                RawWindowHandle::Win32(w) => Some(w.hwnd.get() as isize),
+                _ => None,
+            }
+        })();
+        app.state.set_gui_handles(cc.egui_ctx.clone(), app.native_hwnd);
+        Self::install_cjk_font(&cc.egui_ctx);
+        log(
+            &app.state,
+            &format!(
+                "GUI 初始化完成（托盘:{}，原生HWND:{:?}，起始可见:{})",
+                app.tray.is_some(),
+                app.native_hwnd,
+                start_visible
+            ),
+        );
         if !start_visible {
             app.ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
         }
         app
-    }
-
-    fn show_window(&self) {
-        self.ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-        self.ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
     }
 
     fn send_mon(&self, cmd: MonCmd) {
@@ -115,17 +165,6 @@ impl App {
                 self.state.push_notify("打开雷神失败", &format!("{e}"));
             }
         }
-    }
-
-    fn exit_app(&self, pause_first: bool) {
-        if pause_first {
-            let state = self.state.clone();
-            std::thread::spawn(move || {
-                let _ = actions::do_pause(&state);
-            });
-            std::thread::sleep(Duration::from_secs(2));
-        }
-        std::process::exit(0);
     }
 
     fn load_settings_buf(&mut self) {
@@ -237,49 +276,18 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // ---- 托盘菜单 / 点击事件 ----
-        while let Some(ev) = tray::try_recv_menu() {
-            if let Some(t) = &self.tray {
-                if ev.id == t.ids.show {
-                    self.show_window();
-                } else if ev.id == t.ids.pause {
-                    self.send_mon(MonCmd::ManualPause);
-                } else if ev.id == t.ids.resume {
-                    self.send_mon(MonCmd::ManualResume);
-                } else if ev.id == t.ids.leigod {
-                    self.open_leigod();
-                } else if ev.id == t.ids.exit_pause {
-                    self.exit_app(true);
-                } else if ev.id == t.ids.exit {
-                    self.exit_app(false);
-                }
-            }
+        // ---- 首帧日志 ----
+        if !self.logged_first_frame {
+            self.logged_first_frame = true;
+            log(&self.state, "GUI update 循环已启动");
         }
-        while let Some(ev) = tray::try_recv_click() {
-            if let tray_icon::TrayIconEvent::Click {
-                button: tray_icon::MouseButton::Left,
-                ..
-            } = ev
-            {
-                self.show_window();
-            }
-        }
-
-        // ---- 系统通知出队（主线程弹 toast，保证 COM 环境正确）----
-        let notifications: Vec<(String, String)> =
-            std::mem::take(&mut *self.state.notifications.lock().unwrap());
-        for (title, body) in notifications {
-            let _ = tauri_winrt_notification::Toast::new(TOAST_AUMID)
-                .title(&title)
-                .text1(&body)
-                .show();
-        }
+        // 托盘菜单/点击/系统通知由独立线程处理（窗口隐藏时本循环会停摆，见 state.rs 注释）
 
         // ---- tooltip 同步 ----
         let tip = self.state.monitor.lock().unwrap().tooltip_text();
         if tip != self.tooltip_cache {
             if let Some(t) = &self.tray {
-                let _ = t.icon.set_tooltip(Some(&tip));
+                let _ = t.set_tooltip(Some(&tip));
             }
             self.tooltip_cache = tip;
         }

@@ -2206,6 +2206,7 @@ dependencies = [
  "eframe",
  "image",
  "md5",
+ "raw-window-handle",
  "reqwest",
  "rust-ini",
  "serde",

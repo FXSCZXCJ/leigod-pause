@@ -13,6 +13,7 @@ mod actions;
 mod api;
 mod code_api;
 mod config;
+mod events;
 mod gui;
 mod monitor;
 mod shutdown;
@@ -179,7 +180,7 @@ fn run_gui(config_path: &std::path::Path) {
     let cfg_shared: Arc<RwLock<Config>> = Arc::new(RwLock::new(cfg.clone()));
     let (tx, rx) = mpsc::channel::<monitor::MonCmd>();
 
-    // 后台线程：监控 / HTTP / 管道 / 关机钩子
+    // 后台线程：监控 / 通知 / 托盘事件 / HTTP / 管道 / 关机钩子
     {
         let state = state.clone();
         let cfg_shared = cfg_shared.clone();
@@ -188,6 +189,12 @@ fn run_gui(config_path: &std::path::Path) {
             .spawn(move || monitor::run(state, cfg_shared, rx))
             .expect("启动监控线程失败");
     }
+    {
+        let (ntx, nrx) = mpsc::channel::<(String, String)>();
+        *state.notify_tx.lock().unwrap() = Some(ntx);
+        events::start_notify(state.clone(), nrx);
+    }
+    events::start_tray_threads(state.clone(), tx.clone());
     code_api::start_http(state.clone(), cfg.http_port);
     code_api::start_pipe(state.clone());
     shutdown::install(state.clone());

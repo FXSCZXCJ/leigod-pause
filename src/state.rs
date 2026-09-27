@@ -1,11 +1,17 @@
-//! 全局共享状态与轻量日志（文件 + 内存环形缓冲供 GUI 读取）
+//! 共享状态与轻量日志（文件 + 内存环形缓冲供 GUI 读取）
+//!
+//! 注意：窗口隐藏时 egui 的 update 循环会停摆（Windows 下隐藏窗口的
+//! request_redraw 不会唤醒事件循环），因此托盘菜单、显示窗口、系统通知
+//! 全部走独立线程，绝不依赖 GUI 循环。GUI 循环只在窗口可见时负责绘制。
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::Sender;
 use std::sync::{Mutex, RwLock};
 
 use chrono::Local;
+use eframe::egui;
 
 /// 托盘/界面展示用的监控状态
 #[derive(Clone, Debug, PartialEq)]
@@ -61,14 +67,18 @@ pub struct AppState {
     pub smscode_key: Mutex<String>,
     /// smscode_key 过期时间（展示用）
     pub sms_expiry: Mutex<String>,
-    /// 待 GUI 展示的系统通知队列 (title, body)
-    pub notifications: Mutex<Vec<(String, String)>>,
+    /// 系统通知发送端（notify 线程持有接收端，弹 Windows toast）
+    pub notify_tx: Mutex<Option<Sender<(String, String)>>>,
     /// 最近一次 API 调用结果描述（GUI 状态页展示）
     pub last_api_result: Mutex<String>,
     /// 配置文件路径
     pub config_path: PathBuf,
     /// 内存日志缓冲
     pub log_buf: Mutex<VecDeque<String>>,
+    /// egui 上下文（GUI 初始化后设置；跨线程调用 send_viewport_cmd 安全）
+    pub gui_ctx: Mutex<Option<egui::Context>>,
+    /// 原生窗口句柄（ShowWindow 兜底用）
+    pub native_hwnd: Mutex<Option<isize>>,
 }
 
 impl AppState {
@@ -84,10 +94,12 @@ impl AppState {
             pending_reason: Mutex::new(String::new()),
             smscode_key: Mutex::new(smscode_key),
             sms_expiry: Mutex::new(String::new()),
-            notifications: Mutex::new(Vec::new()),
+            notify_tx: Mutex::new(None),
             last_api_result: Mutex::new("尚未调用过 API".into()),
             config_path,
             log_buf: Mutex::new(VecDeque::with_capacity(600)),
+            gui_ctx: Mutex::new(None),
+            native_hwnd: Mutex::new(None),
         }
     }
 
@@ -106,11 +118,38 @@ impl AppState {
         self.smscode_key.lock().unwrap().clone()
     }
 
+    /// GUI 初始化后注入显示能力
+    pub fn set_gui_handles(&self, ctx: egui::Context, native_hwnd: Option<isize>) {
+        *self.gui_ctx.lock().unwrap() = Some(ctx);
+        *self.native_hwnd.lock().unwrap() = native_hwnd;
+    }
+
+    /// 显示主窗口：原生 ShowWindow（唤醒 egui 循环）+ egui Focus 命令
+    pub fn native_show_window(&self) {
+        if let Some(ctx) = self.gui_ctx.lock().unwrap().clone() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            ctx.request_repaint();
+        }
+        if let Some(h) = *self.native_hwnd.lock().unwrap() {
+            use windows::Win32::Foundation::HWND;
+            use windows::Win32::UI::WindowsAndMessaging::{
+                SetForegroundWindow, ShowWindow, SW_SHOW,
+            };
+            let hwnd = HWND(h as *mut std::ffi::c_void);
+            unsafe {
+                let _ = ShowWindow(hwnd, SW_SHOW);
+                let _ = SetForegroundWindow(hwnd);
+            }
+        }
+        log(self, "显示主窗口");
+    }
+
+    /// 弹出系统通知（由 notify 线程实际执行，任何线程可调用）
     pub fn push_notify(&self, title: &str, body: &str) {
-        self.notifications
-            .lock()
-            .unwrap()
-            .push((title.to_string(), body.to_string()));
+        if let Some(tx) = self.notify_tx.lock().unwrap().as_ref() {
+            let _ = tx.send((title.to_string(), body.to_string()));
+        }
     }
 
     pub fn set_api_result(&self, text: &str) {
