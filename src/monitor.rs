@@ -7,7 +7,7 @@
 
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::Receiver;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use sysinfo::System;
@@ -181,7 +181,7 @@ fn find_game(sys: &System, games: &[String]) -> Option<String> {
             format!("{}.exe", g.to_lowercase())
         };
         for (_pid, proc) in sys.processes() {
-            let pname = proc.name().to_string_lossy().to_lowercase();
+            let pname = proc.name().to_lowercase();
             if pname.contains(&needle) {
                 return Some(g.to_string());
             }

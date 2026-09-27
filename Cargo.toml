@@ -5,7 +5,7 @@ edition = "2021"
 description = "雷神加速器时长自动暂停 (Rust 版)"
 
 [dependencies]
-eframe = "0.29"
+eframe = "0.32"
 tray-icon = "0.14"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
@@ -24,9 +24,11 @@ windows = { version = "0.58", features = [
     "Win32_Foundation",
     "Win32_System_Threading",
     "Win32_System_LibraryLoader",
+    "Win32_System_IO",
     "Win32_UI_WindowsAndMessaging",
     "Win32_System_Pipes",
     "Win32_Storage_FileSystem",
+    "Win32_Graphics_Gdi",
     "Win32_Security",
 ] }
 

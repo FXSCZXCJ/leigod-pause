@@ -4,15 +4,15 @@
 //! 独立线程 + 独立窗口，不依赖 eframe/winit 的消息循环。
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use windows::core::w;
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, PostQuitMessage,
-    RegisterClassW, TranslateMessage, MSG, WINDOW_EX_STYLE, WINDOW_STYLE, WM_DESTROY,
-    WM_ENDSESSION, WM_QUERYENDSESSION, WNDCLASSW, HINSTANCE,
+    RegisterClassW, TranslateMessage, HMENU, MSG, WINDOW_EX_STYLE, WINDOW_STYLE, WM_DESTROY,
+    WM_ENDSESSION, WM_QUERYENDSESSION, WNDCLASSW, HWND_MESSAGE,
 };
 
 use crate::actions;
@@ -20,15 +20,13 @@ use crate::state::{log, AppState};
 
 static SHUTDOWN_PAUSE_DONE: AtomicBool = AtomicBool::new(false);
 
-static mut APP_STATE: Option<Arc<AppState>> = None;
+static APP_STATE: OnceLock<Arc<AppState>> = OnceLock::new();
 
 pub fn install(state: Arc<AppState>) {
-    unsafe {
-        APP_STATE = Some(state);
-    }
+    let _ = APP_STATE.set(state);
     std::thread::Builder::new()
         .name("shutdown-hook".into())
-        .spawn(|| unsafe { message_loop() })
+        .spawn(message_loop)
         .expect("启动关机监听线程失败");
 }
 
@@ -36,16 +34,20 @@ fn force_pause() {
     if SHUTDOWN_PAUSE_DONE.swap(true, Ordering::SeqCst) {
         return;
     }
-    let Some(state) = (unsafe { APP_STATE.as_ref() }).cloned() else {
-        return;
-    };
-    let msg = actions::force_pause_for_shutdown(&state);
-    log(&state, &format!("关机流程：{msg}"));
+    if let Some(state) = APP_STATE.get() {
+        let msg = actions::force_pause_for_shutdown(state);
+        log(state, &format!("关机流程：{msg}"));
+    }
 }
 
-unsafe fn message_loop() {
-    let Ok(hmod) = GetModuleHandleW(None) else {
-        return;
+fn message_loop() {
+    let Some(state) = APP_STATE.get() else { return };
+    let hmod = match unsafe { GetModuleHandleW(None) } {
+        Ok(h) => h,
+        Err(e) => {
+            log(state, &format!("[关机钩子] GetModuleHandleW 失败: {e}"));
+            return;
+        }
     };
     let hinst = HINSTANCE(hmod.0);
     let class_name = w!("LegodPauseShutdownWnd");
@@ -56,31 +58,44 @@ unsafe fn message_loop() {
         hInstance: hinst,
         ..Default::default()
     };
-    RegisterClassW(&wc);
-
-    // HWND_MESSAGE：message-only 窗口，不显示、不进任务栏
-    let hwnd = CreateWindowExW(
-        WINDOW_EX_STYLE(0),
-        class_name,
-        w!("LegodPauseShutdown"),
-        WINDOW_STYLE(0),
-        0,
-        0,
-        0,
-        0,
-        Some(HWND_MESSAGE),
-        None,
-        Some(hinst),
-        None,
-    );
-    if hwnd.is_err() {
+    let atom = unsafe { RegisterClassW(&wc) };
+    if atom == 0 {
+        let err = unsafe { windows::Win32::Foundation::GetLastError() };
+        log(state, &format!("[关机钩子] 注册窗口类失败: win32 error {}", err.0));
         return;
     }
 
+    // HWND_MESSAGE：message-only 窗口，不显示、不进任务栏
+    let hwnd = unsafe {
+        CreateWindowExW(
+            WINDOW_EX_STYLE(0),
+            class_name,
+            w!("LegodPauseShutdown"),
+            WINDOW_STYLE(0),
+            0,
+            0,
+            0,
+            0,
+            HWND_MESSAGE,
+            HMENU::default(),
+            hinst,
+            None,
+        )
+    };
+    match hwnd {
+        Ok(_) => log(state, "[关机钩子] message-only 窗口已创建，等待关机消息"),
+        Err(e) => {
+            log(state, &format!("[关机钩子] 创建窗口失败: {e}"));
+            return;
+        }
+    }
+
     let mut msg = MSG::default();
-    while GetMessageW(&mut msg, None, 0, 0).as_bool() {
-        let _ = TranslateMessage(&msg);
-        DispatchMessageW(&msg);
+    unsafe {
+        while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+            let _ = TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
     }
 }
 

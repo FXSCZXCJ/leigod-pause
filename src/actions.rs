@@ -1,7 +1,6 @@
 //! 高层动作：暂停/恢复/查状态/发码/提交验证码。
 //! monitor、code_api(HTTP/管道)、GUI、CLI 共用，保证行为一致。
 
-use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 

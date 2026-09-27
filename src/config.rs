@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use rust_ini::Ini;
+use ini::Ini;
 
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -96,26 +96,26 @@ impl Config {
                 .filter(|s| !s.is_empty())
                 .collect();
         }
-        if let Some(v) = get("looptime").and_then(|s| s.parse().ok()) {
+        if let Some(v) = get("looptime").and_then(|s| s.parse::<u64>().ok()) {
             cfg.looptime = v;
         }
-        if let Some(v) = get("update").and_then(|s| s.parse().ok()) {
+        if let Some(v) = get("update").and_then(|s| s.parse::<u64>().ok()) {
             cfg.update = v;
         }
         if let Some(v) = get("account_token") {
             cfg.account_token = v;
         }
-        if let Some(v) = get("grace").and_then(|s| s.parse().ok()) {
+        if let Some(v) = get("grace").and_then(|s| s.parse::<u64>().ok()) {
             cfg.grace = v.clamp(10, 600);
         }
-        if let Some(v) = get("http_port").and_then(|s| s.parse().ok()) {
+        if let Some(v) = get("http_port").and_then(|s| s.parse::<u16>().ok()) {
             cfg.http_port = v;
         }
-        if let Some(v) = get("autostart").and_then(|s| s.parse().ok()) {
-            cfg.autostart = v;
+        if let Some(v) = get("autostart") {
+            cfg.autostart = v == "1" || v.eq_ignore_ascii_case("true");
         }
-        if let Some(v) = get("auto_recover").and_then(|s| s.parse().ok()) {
-            cfg.auto_recover = v;
+        if let Some(v) = get("auto_recover") {
+            cfg.auto_recover = v == "1" || v.eq_ignore_ascii_case("true");
         }
         if let Some(v) = get("smscode_key") {
             cfg.smscode_key = v;
@@ -172,7 +172,7 @@ pub fn set_autostart(enable: bool) -> Result<(), String> {
 
 /// 查询当前是否已设置开机自启
 pub fn is_autostart() -> bool {
-    use winreg::enums::{HKEY_CURRENT_USER, KEY_QUERY_VALUE};
+    use winreg::enums::HKEY_CURRENT_USER;
     use winreg::RegKey;
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
     hkcu.open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Run")

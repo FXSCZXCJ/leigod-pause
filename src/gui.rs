@@ -256,10 +256,11 @@ impl eframe::App for App {
             }
         }
         while let Some(ev) = tray::try_recv_click() {
-            if matches!(
-                ev,
-                tray_icon::TrayIconEvent::Click { .. } | tray_icon::TrayIconEvent::DoubleClick { .. }
-            ) {
+            if let tray_icon::TrayIconEvent::Click {
+                button: tray_icon::MouseButton::Left,
+                ..
+            } = ev
+            {
                 self.show_window();
             }
         }
@@ -270,7 +271,7 @@ impl eframe::App for App {
         for (title, body) in notifications {
             let _ = tauri_winrt_notification::Toast::new(TOAST_AUMID)
                 .title(&title)
-                .text(&body)
+                .text1(&body)
                 .show();
         }
 
@@ -281,6 +282,19 @@ impl eframe::App for App {
                 let _ = t.icon.set_tooltip(Some(&tip));
             }
             self.tooltip_cache = tip;
+        }
+
+        // ---- 拦截窗口关闭：点 X 隐藏到托盘而非退出 ----
+        let close_requested = ctx.input(|i| {
+            i.viewport().close_requested()
+                || i.viewport()
+                    .events
+                    .iter()
+                    .any(|e| matches!(e, egui::ViewportEvent::Close))
+        });
+        if close_requested {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
         }
 
         // ---- UI ----
@@ -312,18 +326,6 @@ impl eframe::App for App {
 
         ctx.request_repaint_after(Duration::from_millis(400));
     }
-
-    fn on_close_event(&mut self) -> bool {
-        // 点 X：隐藏到托盘而不是退出
-        self.ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
-        false
-    }
-
-    fn on_exit(&mut self) {
-        if let Some(t) = self.tray.take() {
-            drop(t);
-        }
-    }
 }
 
 impl App {
@@ -352,8 +354,8 @@ impl App {
             } else {
                 (egui::Color32::RED, "token 失效（请到「登录」页更新）")
             };
-            let (rect, painter) = ui.allocate_painter(egui::vec2(14.0, 14.0), egui::Sense::hover());
-            painter.circle_filled(rect.center(), 5.0, dot);
+            let (resp, painter) = ui.allocate_painter(egui::vec2(14.0, 14.0), egui::Sense::hover());
+            painter.circle_filled(resp.rect.center(), 5.0, dot);
             ui.label(text);
         });
 

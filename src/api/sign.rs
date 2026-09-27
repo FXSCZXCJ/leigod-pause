@@ -3,14 +3,12 @@
 //! 算法：body 加上 ts 后按 key 字典序排序，拼成 k=v&k2=v2，末尾追加 &key=<SIGN_KEY>，
 //! 取 MD5 即 sign。仅 login/v2 需要，当前登录走短信接口，此模块保留备用。
 
-use md5::{Digest, Md5};
+use md5;
 
 pub const SIGN_KEY: &str = "5C5A639C20665313622F51E93E3F2783";
 
 pub fn md5_hex(s: &str) -> String {
-    let mut h = Md5::new();
-    h.update(s.as_bytes());
-    format!("{:x}", h.finalize())
+    format!("{:x}", md5::compute(s.as_bytes()))
 }
 
 /// 为请求体计算 ts + sign，返回新 body（不修改入参）

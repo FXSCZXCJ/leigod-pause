@@ -125,14 +125,14 @@ pub fn start_pipe(state: Arc<AppState>) {
 }
 
 unsafe fn pipe_loop(state: Arc<AppState>) {
+    use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::Storage::FileSystem::{
-        CloseHandle, ReadFile, FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_INBOUND,
+        ReadFile, FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_INBOUND,
     };
     use windows::Win32::System::Pipes::{
         ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_MESSAGE,
         PIPE_TYPE_MESSAGE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
     };
-    use windows::Win32::Foundation::{ERROR_PIPE_CONNECTED, HANDLE};
 
     log(&state, &format!("验证码命名管道已启动: {PIPE_NAME}"));
     loop {
@@ -146,19 +146,16 @@ unsafe fn pipe_loop(state: Arc<AppState>) {
             0,
             None,
         );
-        let handle = match handle {
-            Ok(h) => h,
-            Err(e) => {
-                log(&state, &format!("创建管道失败: {e}"));
-                std::thread::sleep(std::time::Duration::from_secs(3));
-                continue;
-            }
-        };
-        let handle = HANDLE(handle.0);
+        if handle.is_invalid() {
+            let err = windows::Win32::Foundation::GetLastError();
+            log(&state, &format!("创建管道失败: win32 error {}", err.0));
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            continue;
+        }
 
         // 等客户端连接（客户端可能已先连上，此时返回 ERROR_PIPE_CONNECTED，同样可读）
         if let Err(e) = ConnectNamedPipe(handle, None) {
-            if e.code() != ERROR_PIPE_CONNECTED.to_hresult() {
+            if e.code() != windows::Win32::Foundation::ERROR_PIPE_CONNECTED.to_hresult() {
                 log(&state, &format!("管道等待连接失败: {e}"));
                 let _ = CloseHandle(handle);
                 std::thread::sleep(std::time::Duration::from_millis(300));

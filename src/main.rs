@@ -21,7 +21,6 @@ mod tray;
 
 use std::sync::mpsc;
 use std::sync::{Arc, RwLock};
-use std::time::Duration;
 
 use config::Config;
 use state::{log, AppState};
@@ -164,7 +163,7 @@ fn run_gui(config_path: &std::path::Path) {
 
     // 配置：不存在则创建默认（首启同时写开机自启）
     let first_run = !config_path.exists();
-    let mut cfg = Config::load(config_path);
+    let cfg = Config::load(config_path);
     if first_run {
         if let Err(e) = cfg.save(config_path) {
             eprintln!("创建默认配置失败: {e}");
@@ -223,7 +222,11 @@ fn run_gui(config_path: &std::path::Path) {
     });
 }
 
-fn window_icon() -> eframe::egui::Icon {
+fn window_icon() -> eframe::egui::IconData {
     let (rgba, w, h) = tray::embedded_icon_rgba();
-    eframe::egui::Icon::from_rgba(rgba, w, h).expect("窗口图标转换失败")
+    eframe::egui::IconData {
+        width: w,
+        height: h,
+        rgba,
+    }
 }

@@ -7,6 +7,8 @@
 //! - /api/auth/login/v1 已被 CloudWAF 418 拦死；v2 需极验，不走
 //! - 双域名 failover：webapi.leigod.com → webapi.nn.com
 
+/// 官方签名算法模块（仅 login/v2 需要，当前登录走短信接口，保留备用）
+#[allow(dead_code)]
 pub mod sign;
 
 use serde_json::{json, Value};
@@ -155,7 +157,7 @@ impl LeigodClient {
             &json!({"account_token": token, "lang": "zh_CN", "os_type": 4}),
         )?) {
             Ok(_) => Ok("暂停成功".into()),
-            Err(ApiError::Api { code, msg }) if code == CODE_ALREADY_PAUSED => {
+            Err(ApiError::Api { code, msg: _ }) if code == CODE_ALREADY_PAUSED => {
                 Ok("已处于暂停状态".into())
             }
             Err(e) => Err(e),
@@ -169,7 +171,7 @@ impl LeigodClient {
             &json!({"account_token": token, "lang": "zh_CN", "os_type": 4}),
         )?) {
             Ok(_) => Ok("恢复成功".into()),
-            Err(ApiError::Api { code, msg }) if code == CODE_ALREADY_PAUSED => {
+            Err(ApiError::Api { code, msg: _ }) if code == CODE_ALREADY_PAUSED => {
                 Ok("已在加速中".into())
             }
             Err(e) => Err(e),
