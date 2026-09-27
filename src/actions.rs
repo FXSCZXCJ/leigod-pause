@@ -54,8 +54,9 @@ pub fn query_info(state: &AppState) -> Result<AccountInfo, ApiError> {
     }
 }
 
-/// 暂停计时（含挂起标记逻辑）
-pub fn do_pause(state: &AppState) -> Result<String, ApiError> {
+/// 暂停计时：先读账号状态，已暂停则跳过调用（避免重复触发与重复提示）。
+/// 返回 (是否实际执行了暂停变更, 说明文本)
+pub fn do_pause(state: &AppState) -> Result<(bool, String), ApiError> {
     let token = state.token();
     if token.is_empty() {
         let msg = "未配置 token，无法暂停";
@@ -67,6 +68,20 @@ pub fn do_pause(state: &AppState) -> Result<String, ApiError> {
             msg: msg.into(),
         });
     }
+
+    // 关键节点：先读暂停状态
+    match query_info(state) {
+        Ok(info) if info.pause_status_id == Some(1) => {
+            state.pending_pause.store(false, Ordering::SeqCst);
+            *state.pause_status.lock().unwrap() = Some(1);
+            state.set_api_result("查询确认：已处于暂停状态，无需重复暂停");
+            log(state, "暂停跳过：账号已处于暂停状态");
+            return Ok((false, "已处于暂停状态".into()));
+        }
+        Ok(_) => {}   // 加速中 → 正常走暂停
+        Err(_) => {}  // 查询失败（如网络抖动）→ 保守起见仍尝试直接暂停
+    }
+
     let c = client(Duration::from_secs(8));
     match c.pause(&token) {
         Ok(msg) => {
@@ -75,7 +90,7 @@ pub fn do_pause(state: &AppState) -> Result<String, ApiError> {
             *state.pause_status.lock().unwrap() = Some(1);
             state.set_api_result(&msg);
             log(state, &format!("暂停计时：{msg}"));
-            Ok(msg)
+            Ok((true, msg))
         }
         Err(e) => {
             if e.is_session_expired() {
@@ -90,8 +105,8 @@ pub fn do_pause(state: &AppState) -> Result<String, ApiError> {
     }
 }
 
-/// 恢复计时
-pub fn do_recover(state: &AppState) -> Result<String, ApiError> {
+/// 恢复计时：先读账号状态，已在加速则跳过调用。返回 (是否实际变更, 说明文本)
+pub fn do_recover(state: &AppState) -> Result<(bool, String), ApiError> {
     let token = state.token();
     if token.is_empty() {
         return Err(ApiError::Api {
@@ -99,6 +114,19 @@ pub fn do_recover(state: &AppState) -> Result<String, ApiError> {
             msg: "尚未配置 token".into(),
         });
     }
+
+    // 关键节点：先读暂停状态
+    match query_info(state) {
+        Ok(info) if info.pause_status_id == Some(0) => {
+            *state.pause_status.lock().unwrap() = Some(0);
+            state.set_api_result("查询确认：已在加速中，无需重复恢复");
+            log(state, "恢复跳过：账号已在加速中");
+            return Ok((false, "已在加速中".into()));
+        }
+        Ok(_) => {}
+        Err(_) => {}
+    }
+
     let c = client(Duration::from_secs(8));
     match c.recover(&token) {
         Ok(msg) => {
@@ -106,7 +134,7 @@ pub fn do_recover(state: &AppState) -> Result<String, ApiError> {
             *state.pause_status.lock().unwrap() = Some(0);
             state.set_api_result(&msg);
             log(state, &format!("恢复计时：{msg}"));
-            Ok(msg)
+            Ok((true, msg))
         }
         Err(e) => {
             if e.is_session_expired() {

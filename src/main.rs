@@ -89,7 +89,7 @@ fn cli_info(config_path: &std::path::Path) {
 fn cli_pause(config_path: &std::path::Path) {
     let state = make_state(config_path);
     match actions::do_pause(&state) {
-        Ok(msg) => println!("{msg}"),
+        Ok((_changed, msg)) => println!("{msg}"),
         Err(e) => {
             eprintln!("暂停失败: {e}");
             std::process::exit(1);
@@ -100,7 +100,7 @@ fn cli_pause(config_path: &std::path::Path) {
 fn cli_resume(config_path: &std::path::Path) {
     let state = make_state(config_path);
     match actions::do_recover(&state) {
-        Ok(msg) => println!("{msg}"),
+        Ok((_changed, msg)) => println!("{msg}"),
         Err(e) => {
             eprintln!("恢复失败: {e}");
             std::process::exit(1);

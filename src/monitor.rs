@@ -62,12 +62,12 @@ pub fn run(state: Arc<AppState>, cfg: Arc<SharedConfig>, rx: Receiver<MonCmd>) {
                 MonCmd::ManualPause => {
                     set_status(&state, MonitorStatus::Idle);
                     match actions::do_pause(&state) {
-                        Ok(msg) => state.push_notify("暂停时长", &msg),
+                        Ok((_changed, msg)) => state.push_notify("暂停时长", &msg),
                         Err(e) => state.push_notify("暂停失败", &format!("{e}")),
                     }
                 }
                 MonCmd::ManualResume => match actions::do_recover(&state) {
-                    Ok(msg) => state.push_notify("恢复时长", &msg),
+                    Ok((_changed, msg)) => state.push_notify("恢复时长", &msg),
                     Err(e) => state.push_notify("恢复失败", &format!("{e}")),
                 },
             }
@@ -80,7 +80,10 @@ pub fn run(state: Arc<AppState>, cfg: Arc<SharedConfig>, rx: Receiver<MonCmd>) {
             if state.pending_pause.load(Ordering::SeqCst) {
                 log(&state, "token 已更新，执行挂起的暂停请求");
                 match actions::do_pause(&state) {
-                    Ok(msg) => state.push_notify("暂停时长", &format!("token 更新后补执行：{msg}")),
+                    Ok((true, msg)) => {
+                        state.push_notify("暂停时长", &format!("token 更新后补执行：{msg}"))
+                    }
+                    Ok((false, _)) => {} // 查询确认已暂停，无需提示
                     Err(e) => state.push_notify("补暂停失败", &format!("{e}")),
                 }
             }
@@ -119,8 +122,10 @@ pub fn run(state: Arc<AppState>, cfg: Arc<SharedConfig>, rx: Receiver<MonCmd>) {
             && Instant::now() >= next_pending_retry
         {
             next_pending_retry = Instant::now() + Duration::from_secs(15);
-            if actions::do_pause(&state).is_ok() {
-                state.push_notify("暂停时长", "已成功暂停（重试成功）");
+            match actions::do_pause(&state) {
+                Ok((true, msg)) => state.push_notify("暂停时长", &format!("已成功暂停（重试成功）：{msg}")),
+                Ok((false, _)) => {} // 已处于暂停状态，静默
+                Err(_) => {}         // 失败继续挂起，不重复打扰
             }
         }
 
@@ -135,7 +140,7 @@ pub fn run(state: Arc<AppState>, cfg: Arc<SharedConfig>, rx: Receiver<MonCmd>) {
                     log(&state, &format!("检测到游戏运行：{name}"));
                     // 从宽限/空闲进入游戏
                     if conf.auto_recover && !matches!(mode, Mode::InGame(_)) {
-                        if let Ok(msg) = actions::do_recover(&state) {
+                        if let Ok((true, msg)) = actions::do_recover(&state) {
                             state.push_notify("自动恢复加速", &msg);
                         }
                     }
@@ -165,9 +170,14 @@ pub fn run(state: Arc<AppState>, cfg: Arc<SharedConfig>, rx: Receiver<MonCmd>) {
                     if left == 0 {
                         log(&state, "宽限期结束，执行自动暂停");
                         match actions::do_pause(&state) {
-                            Ok(msg) => {
+                            Ok((true, msg)) => {
                                 state.push_notify("已自动暂停", &msg);
-                                state.pending_pause.store(false, Ordering::SeqCst);
+                                mode = Mode::Idle;
+                                set_status(&state, MonitorStatus::Idle);
+                            }
+                            Ok((false, _)) => {
+                                // 查询确认本来就已暂停，不打扰用户
+                                log(&state, "账号此前已暂停，本次跳过");
                                 mode = Mode::Idle;
                                 set_status(&state, MonitorStatus::Idle);
                             }
