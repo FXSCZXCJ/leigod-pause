@@ -52,13 +52,17 @@ fn steam_libraries() -> Vec<PathBuf> {
     let mut libs: Vec<PathBuf> = Vec::new();
     for steam in steam_install_dirs() {
         push_unique(&mut libs, steam.clone());
-        let vdf = steam.join("libraryfolders.vdf");
-        if let Ok(content) = std::fs::read_to_string(&vdf) {
-            for line in content.lines() {
-                if let Some(p) = vdf_value(line, "path") {
-                    // vdf 值含 \\\\ 转义，还原为真实路径
-                    push_unique(&mut libs, PathBuf::from(unescape(&norm(&p))));
+        push_unique(&mut libs, steam.clone());
+        // libraryfolders.vdf 在 steamapps 下（旧版本可能在根目录，两处都试）
+        for vdf in [steam.join("steamapps").join("libraryfolders.vdf"), steam.join("libraryfolders.vdf")] {
+            if let Ok(content) = std::fs::read_to_string(&vdf) {
+                for line in content.lines() {
+                    if let Some(p) = vdf_value(line, "path") {
+                        // vdf 值含 \\ 转义，还原为真实路径
+                        push_unique(&mut libs, PathBuf::from(unescape(&norm(&p))));
+                    }
                 }
+                break; // 读到一处即可
             }
         }
     }
@@ -106,8 +110,10 @@ pub fn installed_games() -> Vec<SteamGame> {
                 name: unescape(&game_name),
                 dir: dir.to_string_lossy().to_string(),
             };
-            // 跳过 Steamworks 公共运行库这类非游戏条目；按目录大小写不敏感去重
-            if game.name.eq_ignore_ascii_case("steamworks common redistributables") {
+            // 跳过 Steamworks 运行库与 Steam 自带测试应用（Spacewar, appid 480）
+            if game.name.eq_ignore_ascii_case("steamworks common redistributables")
+                || game.name.eq_ignore_ascii_case("spacewar")
+            {
                 continue;
             }
             let dl = game.dir.to_lowercase();

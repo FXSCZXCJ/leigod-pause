@@ -35,6 +35,7 @@ pub fn run(state: Arc<AppState>, cfg: Arc<SharedConfig>, rx: Receiver<MonCmd>) {
     let mut last_token_version = state.token_version.load(Ordering::SeqCst);
     let mut steam_roots: Vec<String> = Vec::new();
     let mut steam_loaded = false;
+    let mut next_steam_refresh = Instant::now();
 
     log(&state, "监控线程启动");
     // 启动时自动查询一次账号状态（query_info 内部会记录成败并更新 token_valid）
@@ -93,10 +94,12 @@ pub fn run(state: Arc<AppState>, cfg: Arc<SharedConfig>, rx: Receiver<MonCmd>) {
 
         let conf = cfg.read().map(|c| c.clone()).unwrap_or_default();
 
-        // Steam 库目录只加载一次（或热加载配置后刷新开关状态）
-        if !steam_loaded {
+        // Steam 库目录：启动时加载一次，之后每 10 分钟刷新一次
+        // （覆盖用户新加装 Steam 库的场景；关闭 auto_steam 时立即清空）
+        if !steam_loaded || (conf.auto_steam && Instant::now() >= next_steam_refresh) {
             steam_loaded = true;
-            steam_roots = if conf.auto_steam {
+            next_steam_refresh = Instant::now() + Duration::from_secs(600);
+            let new_roots: Vec<String> = if conf.auto_steam {
                 crate::steam::library_common_dirs()
                     .into_iter()
                     .map(|p| {
@@ -110,9 +113,13 @@ pub fn run(state: Arc<AppState>, cfg: Arc<SharedConfig>, rx: Receiver<MonCmd>) {
             } else {
                 Vec::new()
             };
-            if !steam_roots.is_empty() {
-                log(&state, &format!("Steam 自动识别已启用，检测到 {} 个库目录", steam_roots.len()));
+            if new_roots.len() != steam_roots.len() {
+                log(
+                    &state,
+                    &format!("Steam 自动识别库目录更新：{} 个", new_roots.len()),
+                );
             }
+            steam_roots = new_roots;
         }
         if !conf.auto_steam && !steam_roots.is_empty() {
             steam_roots.clear();
@@ -253,6 +260,10 @@ fn find_game(
             .exe()
             .map(|p| p.to_string_lossy().to_lowercase())
             .unwrap_or_default();
+        let exe_orig = proc
+            .exe()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
 
         // 1) 显式进程名规则（与旧版一致：进程名包含 "{name}.exe"）
         for (needle, label) in &name_rules {
@@ -267,10 +278,23 @@ fn find_game(
             }
         }
         // 3) Steam 自动识别：exe 位于任意库的 steamapps/common 之下
+        //    显示名取 common 下的游戏目录名（如 Wardogs），比进程名直观
         if auto_steam && !exe.is_empty() {
             for root in steam_roots {
                 if exe.starts_with(root) {
-                    return Some(pname.trim_end_matches(".exe").to_string());
+                    let label = match exe_orig.to_lowercase().find("\\common\\") {
+                        Some(pos) => exe_orig[pos + 8..]
+                            .split('\\')
+                            .next()
+                            .unwrap_or("")
+                            .to_string(),
+                        None => String::new(),
+                    };
+                    return Some(if label.is_empty() {
+                        pname.trim_end_matches(".exe").to_string()
+                    } else {
+                        label
+                    });
                 }
             }
         }
