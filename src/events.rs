@@ -10,18 +10,93 @@ use crate::actions;
 use crate::monitor::MonCmd;
 use crate::state::{log, AppState};
 
-/// Windows 通知使用的已注册 AppUserModelID（借用 PowerShell 的，保证能弹出来）
-const TOAST_AUMID: &str =
+/// 通知 AUMID：优先用本程序自己的身份（需开始菜单快捷方式注册），失败回退 PowerShell
+const TOAST_AUMID_FALLBACK: &str =
     "{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe";
+const TOAST_AUMID_OWN: &str = "Legod.Pause";
 
-pub fn start_notify(state: Arc<AppState>, rx: Receiver<(String, String)>) {
+/// 通知线程实际使用的 AUMID
+static TOAST_AUMID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// 启动时注册本程序的通知身份：
+/// 在开始菜单创建带 System.AppUserModel.ID 属性的快捷方式，
+/// 之后 toast 标题显示「雷神自动暂停」和雷神图标，而不是 PowerShell。
+/// 失败（如被安全软件拦截）则回退 PowerShell 身份。
+pub fn init_toast_identity() -> String {
+    let exe = std::env::current_exe()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+    match ensure_aumid_shortcut(TOAST_AUMID_OWN, &exe) {
+        Ok(()) => {
+            log_state(&format!("通知身份已注册为「雷神自动暂停」({TOAST_AUMID_OWN})"));
+            TOAST_AUMID_OWN.into()
+        }
+        Err(e) => {
+            log_state(&format!("通知身份注册失败({e})，回退 PowerShell 身份"));
+            TOAST_AUMID_FALLBACK.into()
+        }
+    }
+}
+
+fn log_state(msg: &str) {
+    // 由 main 在状态创建后调用，这里兜底直接输出
+    println!("[aumid] {msg}");
+}
+
+fn aumid_lnk_path() -> std::path::PathBuf {
+    let base = std::env::var("APPDATA").unwrap_or_default();
+    std::path::PathBuf::from(base)
+        .join(r"Microsoft\Windows\Start Menu\Programs")
+        .join("雷神自动暂停.lnk")
+}
+
+fn ensure_aumid_shortcut(aumid: &str, exe: &str) -> Result<(), String> {
+    use windows::core::{HSTRING, Interface, PROPVARIANT};
+    use windows::Win32::Storage::EnhancedStorage::PKEY_AppUserModel_ID;
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, IPersistFile, CLSCTX_INPROC_SERVER,
+        COINIT_APARTMENTTHREADED,
+    };
+    use windows::Win32::UI::Shell::PropertiesSystem::IPropertyStore;
+    use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
+
+    let lnk = aumid_lnk_path();
+    if let Some(dir) = lnk.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("创建目录失败: {e}"))?;
+    }
+    unsafe {
+        CoInitializeEx(None, COINIT_APARTMENTTHREADED)
+            .ok()
+            .map_err(|e| format!("COM 初始化失败: {e}"))?;
+        let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER)
+            .map_err(|e| format!("创建 ShellLink 失败: {e}"))?;
+        link.SetPath(&HSTRING::from(exe))
+            .map_err(|e| format!("SetPath 失败: {e}"))?;
+        if let Some(dir) = std::path::Path::new(exe).parent() {
+            let _ = link.SetWorkingDirectory(&HSTRING::from(dir.as_os_str()));
+        }
+        let store: IPropertyStore = link.cast().map_err(|e| format!("取属性存储失败: {e}"))?;
+        store
+            .SetValue(&PKEY_AppUserModel_ID, &PROPVARIANT::from(aumid))
+            .map_err(|e| format!("设置 AUMID 失败: {e}"))?;
+        store.Commit().map_err(|e| format!("提交属性失败: {e}"))?;
+        let pf: IPersistFile = link.cast().map_err(|e| format!("取 IPersistFile 失败: {e}"))?;
+        pf.Save(&HSTRING::from(lnk.as_os_str()), true)
+            .map_err(|e| format!("保存快捷方式失败: {e}"))?;
+    }
+    Ok(())
+}
+
+pub fn start_notify(state: Arc<AppState>, rx: Receiver<(String, String)>, aumid: String) {
+    let _ = TOAST_AUMID.set(aumid);
     std::thread::Builder::new()
         .name("notify".into())
         .spawn(move || unsafe {
             use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
             let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
             while let Ok((title, body)) = rx.recv() {
-                let r = tauri_winrt_notification::Toast::new(TOAST_AUMID)
+                let aumid = TOAST_AUMID.get().map(|s| s.as_str()).unwrap_or(TOAST_AUMID_FALLBACK);
+                let r = tauri_winrt_notification::Toast::new(aumid)
                     .title(&title)
                     .text1(&body)
                     .show();

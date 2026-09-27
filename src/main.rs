@@ -238,7 +238,8 @@ fn run_gui(config_path: &std::path::Path) {
     {
         let (ntx, nrx) = mpsc::channel::<(String, String)>();
         *state.notify_tx.lock().unwrap() = Some(ntx);
-        events::start_notify(state.clone(), nrx);
+        let aumid = events::init_toast_identity();
+        events::start_notify(state.clone(), nrx, aumid);
     }
     events::start_tray_threads(state.clone(), tx.clone());
     code_api::start_http(state.clone(), cfg.http_port);
