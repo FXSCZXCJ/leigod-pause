@@ -97,7 +97,8 @@ fn open_leigod(state: &Arc<AppState>) {
         state.push_notify("打开雷神失败", "config.ini 未配置 path（雷神客户端路径）");
         return;
     }
-    match std::process::Command::new("cmd").args(["/C", "start", "", &path]).spawn() {
+    // 直接 spawn，避免经 cmd 传参时路径反斜杠被转义处理吃掉
+    match std::process::Command::new(&path).spawn() {
         Ok(_) => log(state, "已启动雷神客户端"),
         Err(e) => {
             log(state, &format!("启动雷神失败: {e}"));
