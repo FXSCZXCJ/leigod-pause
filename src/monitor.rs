@@ -37,6 +37,8 @@ pub fn run(state: Arc<AppState>, cfg: Arc<SharedConfig>, rx: Receiver<MonCmd>) {
     let mut steam_loaded = false;
 
     log(&state, "监控线程启动");
+    // 启动时自动查询一次账号状态（query_info 内部会记录成败并更新 token_valid）
+    let _ = actions::query_info(&state);
     set_status(&state, MonitorStatus::Idle);
 
     loop {
