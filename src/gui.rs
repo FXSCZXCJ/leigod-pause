@@ -567,7 +567,7 @@ impl App {
                 let lower = exe_str.to_lowercase();
                 // 排除系统目录、自身、无路径进程
                 if lower.starts_with(r"c:\windows\")
-                    || lower.ends_with("legod-pause.exe")
+                    || lower.ends_with("leigod-pause.exe")
                     || exe_str.is_empty()
                 {
                     continue;

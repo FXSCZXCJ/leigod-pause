@@ -43,7 +43,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    /// 与 Python 版 legod_sign 同输入同输出（稳定性向量）
+    /// 与 Python 版 leigod_sign 同输入同输出（稳定性向量）
     #[test]
     fn sign_is_deterministic_and_sorted() {
         let b = json!({"username": "13500000000", "password": "abc", "country_code": 86});

@@ -19,7 +19,7 @@ use crate::actions;
 use crate::state::{log, AppState};
 
 /// message-only 控制窗口的类名（其它实例按这个类名找窗口，见 main.rs 的 --show）
-pub const CONTROL_WINDOW_CLASS: windows::core::PCWSTR = w!("LegodPauseShutdownWnd");
+pub const CONTROL_WINDOW_CLASS: windows::core::PCWSTR = w!("LeigodPauseShutdownWnd");
 /// 第二个实例发这个消息，请已运行实例把主界面显示出来
 pub const WM_SHOW_MAIN_WINDOW: u32 = WM_APP + 1;
 
@@ -55,7 +55,7 @@ fn message_loop() {
         }
     };
     let hinst = HINSTANCE(hmod.0);
-    let class_name = w!("LegodPauseShutdownWnd");
+    let class_name = w!("LeigodPauseShutdownWnd");
 
     let wc = WNDCLASSW {
         lpfnWndProc: Some(wndproc),
@@ -75,7 +75,7 @@ fn message_loop() {
         CreateWindowExW(
             WINDOW_EX_STYLE(0),
             class_name,
-            w!("LegodPauseShutdown"),
+            w!("LeigodPauseShutdown"),
             WINDOW_STYLE(0),
             0,
             0,

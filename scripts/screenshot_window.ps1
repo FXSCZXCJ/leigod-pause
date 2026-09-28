@@ -4,7 +4,7 @@
 # Usage: powershell -NoProfile -ExecutionPolicy Bypass -File scripts\screenshot_window.ps1 -TargetPid 1234 -Out shot.png
 param(
     [Parameter(Mandatory = $true)][int]$TargetPid,
-    [string]$Out = "$env:TEMP\legod_window.png"
+    [string]$Out = "$env:TEMP\leigod_window.png"
 )
 
 Add-Type @"

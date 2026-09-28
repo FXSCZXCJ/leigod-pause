@@ -13,7 +13,7 @@ use crate::state::{log, AppState};
 /// 通知 AUMID：优先用本程序自己的身份（需开始菜单快捷方式注册），失败回退 PowerShell
 const TOAST_AUMID_FALLBACK: &str =
     "{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe";
-const TOAST_AUMID_OWN: &str = "Legod.Pause";
+const TOAST_AUMID_OWN: &str = "Leigod.Pause";
 
 /// 通知线程实际使用的 AUMID
 static TOAST_AUMID: std::sync::OnceLock<String> = std::sync::OnceLock::new();

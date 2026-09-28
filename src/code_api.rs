@@ -4,7 +4,7 @@
 //!      POST /token/code {"code":"867020"} → 用验证码换 token 并保存
 //!      GET  /status     → token/暂停/监控状态（含实时 info 查询）
 //!      GET  /health     → 存活探测
-//! 2) 命名管道 \\.\pipe\legod-sms-code：每行一条，"sms"=触发发码，纯数字=提交验证码
+//! 2) 命名管道 \\.\pipe\leigod-sms-code：每行一条，"sms"=触发发码，纯数字=提交验证码
 //!
 //! 短信转发 App / 脚本 / AutoHotkey 均可调用，实现 token 全自动续期。
 
@@ -16,7 +16,7 @@ use serde_json::json;
 use crate::actions;
 use crate::state::{log, AppState};
 
-pub const PIPE_NAME: &str = r"\\.\pipe\legod-sms-code";
+pub const PIPE_NAME: &str = r"\\.\pipe\leigod-sms-code";
 
 pub fn start_http(state: Arc<AppState>, port: u16) {
     std::thread::Builder::new()
@@ -141,7 +141,7 @@ unsafe fn pipe_loop(state: Arc<AppState>) {
     log(&state, &format!("验证码命名管道已启动: {PIPE_NAME}"));
     loop {
         let handle = CreateNamedPipeW(
-            windows::core::w!(r"\\.\pipe\legod-sms-code"),
+            windows::core::w!(r"\\.\pipe\leigod-sms-code"),
             PIPE_ACCESS_INBOUND | FILE_FLAG_FIRST_PIPE_INSTANCE,
             PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
             PIPE_UNLIMITED_INSTANCES,

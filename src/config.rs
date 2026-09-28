@@ -165,7 +165,7 @@ fn startup_lnk_path() -> PathBuf {
     let base = std::env::var("APPDATA").unwrap_or_default();
     PathBuf::from(base)
         .join(r"Microsoft\Windows\Start Menu\Programs\Startup")
-        .join("legod-pause.lnk")
+        .join("leigod-pause.lnk")
 }
 
 /// 自启入口使用的启动参数：后台静默，不弹控制台也不弹界面
@@ -186,7 +186,7 @@ fn read_run_key() -> Result<Option<String>, String> {
             KEY_QUERY_VALUE,
         )
         .map_err(|e| format!("{e}"))?;
-    match run.get_value::<String, _>("LegodPause") {
+    match run.get_value::<String, _>("LeigodPause") {
         Ok(v) => Ok(Some(v)),
         Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(format!("{e}")),
@@ -353,12 +353,12 @@ fn write_run_key(exe: &str) -> Result<(), String> {
         )
         .map_err(|e| format!("打开注册表失败: {e}"))?;
     // 已是目标值就跳过写入（规避安全软件对重复写入的拦截）
-    if let Ok(cur) = run.get_value::<String, _>("LegodPause") {
+    if let Ok(cur) = run.get_value::<String, _>("LeigodPause") {
         if cur == target {
             return Ok(());
         }
     }
-    run.set_value("LegodPause", &target)
+    run.set_value("LeigodPause", &target)
         .map_err(|e| format!("{e} (os error {:?})", e.raw_os_error().unwrap_or(0)))
 }
 
@@ -404,7 +404,7 @@ fn delete_run_key() -> Result<(), RunKeyResult> {
     let run = hkcu
         .open_subkey_with_flags(r"Software\Microsoft\Windows\CurrentVersion\Run", KEY_SET_VALUE)
         .map_err(|e| RunKeyResult::Denied(format!("{e}")))?;
-    match run.delete_value("LegodPause") {
+    match run.delete_value("LeigodPause") {
         Ok(()) => Ok(()),
         Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => Err(RunKeyResult::NotFound),
         Err(e) => Err(RunKeyResult::Denied(format!("{e}"))),
@@ -420,6 +420,6 @@ pub fn is_autostart() -> bool {
     }
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
     hkcu.open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Run")
-        .and_then(|k| k.get_value::<String, _>("LegodPause"))
+        .and_then(|k| k.get_value::<String, _>("LeigodPause"))
         .is_ok()
 }

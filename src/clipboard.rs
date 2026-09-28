@@ -158,7 +158,7 @@ pub fn spawn_watcher(
                 return;
             };
             let hinst = HINSTANCE(hmod.0);
-            let class_name = w!("LegodPauseClipWnd");
+            let class_name = w!("LeigodPauseClipWnd");
             let wc = WNDCLASSW {
                 lpfnWndProc: Some(wndproc),
                 lpszClassName: class_name,
@@ -173,7 +173,7 @@ pub fn spawn_watcher(
                 CreateWindowExW(
                     WINDOW_EX_STYLE(0),
                     class_name,
-                    w!("LegodPauseClip"),
+                    w!("LeigodPauseClip"),
                     WINDOW_STYLE(0),
                     0,
                     0,

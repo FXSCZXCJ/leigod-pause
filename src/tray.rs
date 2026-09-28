@@ -7,7 +7,7 @@ use tray_icon::menu::{Menu, MenuId, MenuItem, PredefinedMenuItem};
 use tray_icon::{TrayIcon, TrayIconBuilder};
 
 pub fn embedded_icon_rgba() -> (Vec<u8>, u32, u32) {
-    const ICO: &[u8] = include_bytes!("../assets/legod.ico");
+    const ICO: &[u8] = include_bytes!("../assets/leigod.ico");
     let img = image::load_from_memory_with_format(ICO, image::ImageFormat::Ico)
         .expect("解码内置图标失败")
         .into_rgba8();

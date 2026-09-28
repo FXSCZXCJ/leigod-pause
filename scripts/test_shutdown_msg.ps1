@@ -6,7 +6,7 @@ public class WMsg {
   [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint m, IntPtr w, IntPtr l);
 }
 "@
-$h = [WMsg]::FindWindowExW([IntPtr](-3), [IntPtr]::Zero, "LegodPauseShutdownWnd", [IntPtr]::Zero)
+$h = [WMsg]::FindWindowExW([IntPtr](-3), [IntPtr]::Zero, "LeigodPauseShutdownWnd", [IntPtr]::Zero)
 if ($h -eq [IntPtr]::Zero) { Write-Output "NOT_FOUND"; exit 1 }
 Write-Output ("FOUND: 0x" + $h.ToString('X'))
 $ok1 = [WMsg]::PostMessage($h, 0x0011, [IntPtr]::Zero, [IntPtr]::Zero)   # WM_QUERYENDSESSION

@@ -1,15 +1,15 @@
 //! 雷神加速器时长自动暂停 — Rust 版
 //!
 //! 用法：
-//!   legod-pause.exe               后台静默运行（托盘，不弹控制台也不弹界面）
-//!   legod-pause.exe --show        启动时打开主界面
-//!   legod-pause.exe --console     额外开一个控制台窗口看日志（调试用）
-//!   legod-pause.exe info          查询账号/暂停状态
-//!   legod-pause.exe pause         立即暂停计时
-//!   legod-pause.exe resume        恢复计时
-//!   legod-pause.exe sms           触发下发短信验证码
-//!   legod-pause.exe code <验证码> 用验证码更新 token
-//!   legod-pause.exe status        本机接口状态（等价 GET /status）
+//!   leigod-pause.exe               后台静默运行（托盘，不弹控制台也不弹界面）
+//!   leigod-pause.exe --show        启动时打开主界面
+//!   leigod-pause.exe --console     额外开一个控制台窗口看日志（调试用）
+//!   leigod-pause.exe info          查询账号/暂停状态
+//!   leigod-pause.exe pause         立即暂停计时
+//!   leigod-pause.exe resume        恢复计时
+//!   leigod-pause.exe sms           触发下发短信验证码
+//!   leigod-pause.exe code <验证码> 用验证码更新 token
+//!   leigod-pause.exe status        本机接口状态（等价 GET /status）
 //!
 //! 编译为 GUI 子系统（不产生控制台窗口）：从终端启动时自动接上父控制台，
 //! 双击/开机自启时没有控制台，输出走日志文件；要控制台窗口用 `--console`。
@@ -130,7 +130,7 @@ fn init_stdio() -> &'static str {
                 return "已接上终端控制台";
             }
             discard();
-            return "无控制台（输出丢弃，日志见 legod_rs.log）";
+            return "无控制台（输出丢弃，日志见 leigod_rs.log）";
         }
         // 管道 / 文件重定向：直接沿用父进程句柄，不能改写成 CONOUT$
         if GetFileType(handle.unwrap()) != FILE_TYPE_CHAR {
@@ -141,7 +141,7 @@ fn init_stdio() -> &'static str {
             return "已接上终端控制台";
         }
         discard();
-        "无控制台（输出丢弃，日志见 legod_rs.log）"
+        "无控制台（输出丢弃，日志见 leigod_rs.log）"
     }
 }
 
@@ -163,16 +163,16 @@ fn print_help() {
     println!(
         "雷神加速器时长自动暂停 v{v}\n\
          用法:\n\
-         \x20 legod-pause.exe               后台静默运行（托盘，不弹控制台也不弹界面）\n\
-         \x20 legod-pause.exe --show        启动时打开主界面\n\
-         \x20 legod-pause.exe --console     额外开一个控制台窗口看日志（调试用）\n\
-         \x20 legod-pause.exe info          查询账号/暂停状态\n\
-         \x20 legod-pause.exe pause         立即暂停计时\n\
-         \x20 legod-pause.exe resume        恢复计时\n\
-         \x20 legod-pause.exe sms           触发下发短信验证码\n\
-         \x20 legod-pause.exe code <n>      用验证码更新 token\n\
-         \x20 legod-pause.exe status        查询本机接口状态\n\
-         验证码自动接口: POST http://127.0.0.1:{{port}}/token/sms | /token/code  或  命名管道 \\\\.\\pipe\\legod-sms-code",
+         \x20 leigod-pause.exe               后台静默运行（托盘，不弹控制台也不弹界面）\n\
+         \x20 leigod-pause.exe --show        启动时打开主界面\n\
+         \x20 leigod-pause.exe --console     额外开一个控制台窗口看日志（调试用）\n\
+         \x20 leigod-pause.exe info          查询账号/暂停状态\n\
+         \x20 leigod-pause.exe pause         立即暂停计时\n\
+         \x20 leigod-pause.exe resume        恢复计时\n\
+         \x20 leigod-pause.exe sms           触发下发短信验证码\n\
+         \x20 leigod-pause.exe code <n>      用验证码更新 token\n\
+         \x20 leigod-pause.exe status        查询本机接口状态\n\
+         验证码自动接口: POST http://127.0.0.1:{{port}}/token/sms | /token/code  或  命名管道 \\\\.\\pipe\\leigod-sms-code",
         v = env!("CARGO_PKG_VERSION")
     );
 }
@@ -234,7 +234,7 @@ fn cli_sms(config_path: &std::path::Path) {
 
 fn cli_code(config_path: &std::path::Path, code: Option<&str>) {
     let Some(code) = code else {
-        eprintln!("用法: legod-pause.exe code <验证码>");
+        eprintln!("用法: leigod-pause.exe code <验证码>");
         std::process::exit(2);
     };
     let state = make_state(config_path);
@@ -318,7 +318,7 @@ fn run_gui(
         use windows::core::w;
         use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
         use windows::Win32::System::Threading::CreateMutexW;
-        let _ = CreateMutexW(None, false, w!("legodpause"));
+        let _ = CreateMutexW(None, false, w!("leigodpause"));
         if GetLastError() == ERROR_ALREADY_EXISTS {
             if show_window && activate_existing_window() {
                 // 用户明确要界面：把已运行实例的主界面叫出来
@@ -342,7 +342,7 @@ fn run_gui(
     }
 
     let state = make_state(config_path);
-    log(&state, &format!("legod-pause v{} 启动", env!("CARGO_PKG_VERSION")));
+    log(&state, &format!("leigod-pause v{} 启动", env!("CARGO_PKG_VERSION")));
     log(
         &state,
         &format!(
@@ -407,7 +407,7 @@ fn run_gui(
     let state_gui = state.clone();
     let cfg_gui = cfg_shared.clone();
     eframe::run_native(
-        "legod-pause",
+        "leigod-pause",
         native_options,
         Box::new(move |cc| {
             Ok(Box::new(gui::App::new(
@@ -470,7 +470,7 @@ fn activate_existing_window() -> bool {
 /// 直接追加一行日志（此时还没建 AppState）
 fn append_log(config_path: &std::path::Path, msg: &str) {
     use std::io::Write;
-    let path = config_path.with_file_name("legod_rs.log");
+    let path = config_path.with_file_name("leigod_rs.log");
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
         let _ = writeln!(f, "[{}] {}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), msg);
     }

@@ -1,4 +1,4 @@
-# legod-pause — 雷神加速器时长自动暂停 (Rust 版 v3.0)
+# leigod-pause — 雷神加速器时长自动暂停 (Rust 版 v3.0)
 
 原 Python 项目 [6yy66yy/legod-auto-pause](https://github.com/6yy66yy/legod-auto-pause) 的 Rust 重写版。
 API 现状调研与实测结论见 [API_NOTES.md](API_NOTES.md)，想改代码先看 [ARCHITECTURE.md](ARCHITECTURE.md)（写给 Rust 新手的架构说明）。
@@ -20,7 +20,7 @@ API 现状调研与实测结论见 [API_NOTES.md](API_NOTES.md)，想改代码�
 
 - **不要把 `config.ini` 上传、分享、截图或提交到 Git**（本仓库 `.gitignore` 已排除 `config.ini`、`config-dev.ini`、`*.log`，但**克隆别人的仓库/自己 fork 时请再确认一次**）；
 - 建议把程序放在**个人目录**，不要放在共享目录或会被自动同步到云端的目录（OneDrive / 坚果云 / 网盘同步目录）；
-- 日志 `legod_rs.log` 里手机号已打码（形如 `135****81`），但**仍包含操作记录**，分享日志前请自己过一眼；
+- 日志 `leigod_rs.log` 里手机号已打码（形如 `135****81`），但**仍包含操作记录**，分享日志前请自己过一眼；
 - **剪贴板自动识别功能**开启后，token 会短暂停留在系统剪贴板里；Windows 的剪贴板历史（`Win+V`）和「跨设备云剪贴板」可能把它记录下来，敏感环境下请在设置里关闭该功能，或事后用 `Win+V` 清掉；
 - 该文件等同账号钥匙：**转移/卸载/送修前记得删除**；怀疑泄露就去官网重新登录一次，旧 token 会随之失效。
 
@@ -36,7 +36,7 @@ API 现状调研与实测结论见 [API_NOTES.md](API_NOTES.md)，想改代码�
 | 登录 | 日志 |
 |---|---|
 | ![登录页](docs/screenshots/login.png) | ![日志页](docs/screenshots/logs.png) |
-| 进入页面即自动复制取 token 命令，也支持短信验证码与手动粘贴 | 实时日志，排查问题先看这里（同时写入 exe 同目录 `legod_rs.log`） |
+| 进入页面即自动复制取 token 命令，也支持短信验证码与手动粘贴 | 实时日志，排查问题先看这里（同时写入 exe 同目录 `leigod_rs.log`） |
 
 > 截图为开发机上的浅色主题（示例配置：手机号为占位号码、游戏列表为示例）；界面同样支持深色主题，配色会随系统主题自适应。
 
@@ -45,9 +45,9 @@ API 现状调研与实测结论见 [API_NOTES.md](API_NOTES.md)，想改代码�
 ## 功能
 
 - **启动即静默**：编译为 GUI 子系统程序，双击 / 开机自启都不弹控制台、不弹界面，直接进托盘
-  - `legod-pause.exe`：后台静默运行（默认，开机自启入口就写这个参数 `--hidden`）
-  - `legod-pause.exe --show`：启动时打开主界面；若程序已在运行则把主界面叫到前台
-  - `legod-pause.exe --console`：额外开一个控制台窗口实时看日志（调试用）
+  - `leigod-pause.exe`：后台静默运行（默认，开机自启入口就写这个参数 `--hidden`）
+  - `leigod-pause.exe --show`：启动时打开主界面；若程序已在运行则把主界面叫到前台
+  - `leigod-pause.exe --console`：额外开一个控制台窗口实时看日志（调试用）
 - **托盘常驻**：右键菜单（打开主界面 / 暂停时长 / 恢复时长 / 打开雷神 / 退出并暂停 / 退出），tooltip 实时显示监控状态，状态变化弹 Windows 通知
 - **主界面**（egui 四页签）：
   - 状态：token 灯 / 账号暂停状态 / 监控状态与宽限倒计时 / 手动暂停·恢复·查询按钮
@@ -62,9 +62,9 @@ API 现状调研与实测结论见 [API_NOTES.md](API_NOTES.md)，想改代码�
 - **关机强制暂停**：钩住 WM_QUERYENDSESSION/WM_ENDSESSION，关机前同步调暂停接口（2s 超时 × 2 次重试）
 - **token 自动续期接口**（短信验证码双通道，供短信转发 App / 脚本全自动续 token）：
   - HTTP：`POST http://127.0.0.1:18100/token/sms`（触发发码）→ `POST /token/code`，body `{"code":"867020"}`（换新 token）
-  - 命名管道：`\\.\pipe\legod-sms-code`，每行一条，`sms`=触发发码，纯数字=提交验证码
+  - 命名管道：`\\.\pipe\leigod-sms-code`，每行一条，`sms`=触发发码，纯数字=提交验证码
   - `GET /status` 实时状态、`GET /health` 存活探测
-- **CLI**：`legod-pause.exe info|pause|resume|sms|code <验证码>|status|help`
+- **CLI**：`leigod-pause.exe info|pause|resume|sms|code <验证码>|status|help`
   （在终端里运行会自动接上父控制台，输出照常显示；`| more`、`> out.txt` 重定向也可用）
 - token 失效时暂停请求**挂起**，任意通道更新 token 后自动补暂停
 
@@ -112,7 +112,7 @@ cargo build --release # 发布单 exe（内嵌图标）
 | `screenshot_window.ps1` | 用 `PrintWindow` 只截程序窗口（不抓桌面内容），验证界面配色/字体 |
 | `click_client.ps1` | 向窗口客户区发送一次点击（GUI 验证用，注意 egui 对注入点击的响应有限） |
 
-日志文件 `legod_rs.log`（UTF-8，建议用 VSCode 等查看，GBK 终端 `type` 会乱码）。
+日志文件 `leigod_rs.log`（UTF-8，建议用 VSCode 等查看，GBK 终端 `type` 会乱码）。
 
 ---
 

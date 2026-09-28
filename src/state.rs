@@ -157,7 +157,7 @@ impl AppState {
     }
 }
 
-/// 追加一行日志：写入 exe 同目录 legod_rs.log + 内存缓冲
+/// 追加一行日志：写入 exe 同目录 leigod_rs.log + 内存缓冲
 pub fn log(state: &AppState, msg: &str) {
     let line = format!("[{}] {}", Local::now().format("%Y-%m-%d %H:%M:%S"), msg);
     // GUI 子系统下可能没有控制台，写 stdout 失败属正常，不能让它 panic
@@ -182,7 +182,7 @@ pub fn log(state: &AppState, msg: &str) {
 }
 
 fn log_path(state: &AppState) -> PathBuf {
-    state.config_path.with_file_name("legod_rs.log")
+    state.config_path.with_file_name("leigod_rs.log")
 }
 
 /// 持有配置的全局句柄（各线程共享读写）

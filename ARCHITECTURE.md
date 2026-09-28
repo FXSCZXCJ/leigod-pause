@@ -1,4 +1,4 @@
-# 架构说明 · legod-pause
+# 架构说明 · leigod-pause
 
 > 这份文档写给**第一次读 Rust 项目的人**：不需要会 Rust，出现的术语都会先解释。
 > 读完你应该能大致说清楚：这个程序由哪几块组成、数据怎么在它们之间流动、为什么有些地方写得那么绕。
@@ -78,10 +78,10 @@ Windows 通知"要关机了"（WM_QUERYENDSESSION）
 ## 2. 目录地图
 
 ```
-legod-auto-pause/
+leigod-pause/
 ├─ Cargo.toml           依赖清单（装了什么库、Windows 功能开了哪些）
-├─ build.rs             构建脚本：把 assets/legod.ico 嵌进 exe
-├─ assets/legod.ico     程序图标（托盘 + exe 图标）
+├─ build.rs             构建脚本：把 assets/leigod.ico 嵌进 exe
+├─ assets/leigod.ico     程序图标（托盘 + exe 图标）
 ├─ API_NOTES.md         雷神接口的实测记录（逆向结果，改接口相关代码前必读）
 ├─ ARCHITECTURE.md      本文
 └─ src/
@@ -126,7 +126,7 @@ legod-auto-pause/
 | `tray-click` | `events.rs` | 阻塞等待托盘图标左键点击 → 显示主窗口 | 永不 |
 | `notify` | `events.rs` | 收通知队列 → 弹 Windows 通知 | 永不 |
 | `http-api` | `code_api.rs` | 监听 `127.0.0.1:18100`，处理验证码相关请求 | 永不 |
-| `pipe-api` | `code_api.rs` | 监听命名管道 `\\.\pipe\legod-sms-code` | 永不 |
+| `pipe-api` | `code_api.rs` | 监听命名管道 `\\.\pipe\leigod-sms-code` | 永不 |
 | `shutdown-hook` | `shutdown.rs` | 消息循环，等 `WM_QUERYENDSESSION` | 永不 |
 | `clip-watch` | `clipboard.rs` | 消息循环，等系统"剪贴板变了"通知 | 永不 |
 | `autostart-fix` | `main.rs` | 启动后修正开机自启入口参数（一次性） | 干完就退 |
@@ -162,7 +162,7 @@ legod-auto-pause/
 | `gui_ctx` / `native_hwnd` | `Mutex<Option<..>>` | 界面初始化后 | 任意线程 | 让别的线程也能"把主窗口叫出来" |
 | `log_buf` | `Mutex<VecDeque<String>>` | `log()` | 界面日志页 | 内存里的最近 500 行日志 |
 
-`log()` 这个函数做了两件事：写内存缓冲（界面看）+ 追加到 exe 同目录的 `legod_rs.log`（排查问题看）。**遇到问题先看这个日志文件**，每次启动还会打印一行「启动模式：…」，很省事。
+`log()` 这个函数做了两件事：写内存缓冲（界面看）+ 追加到 exe 同目录的 `leigod_rs.log`（排查问题看）。**遇到问题先看这个日志文件**，每次启动还会打印一行「启动模式：…」，很省事。
 
 ---
 
@@ -216,7 +216,7 @@ Windows 下窗口被隐藏后，winit（egui 的窗口后端）的 `request_redr
 
 Windows 的 toast 通知要求发送方有一个已注册的 AppUserModelID，否则系统直接丢弃。未打包的 exe 默认没有身份，**借用的身份会显示成它的名字**（早期版本通知标题显示"Windows PowerShell"就是这个原因）。
 
-`events.rs` 的 `ensure_aumid_shortcut()` 用 Shell COM 在开始菜单建一个带 `System.AppUserModel.ID = Legod.Pause` 的快捷方式，从此通知标题就是「雷神自动暂停」；万一被安全软件拦下，退回 PowerShell 身份（通知仍能弹，只是标题难看）。
+`events.rs` 的 `ensure_aumid_shortcut()` 用 Shell COM 在开始菜单建一个带 `System.AppUserModel.ID = Leigod.Pause` 的快捷方式，从此通知标题就是「雷神自动暂停」；万一被安全软件拦下，退回 PowerShell 身份（通知仍能弹，只是标题难看）。
 
 ---
 
@@ -228,7 +228,7 @@ Windows 的 toast 通知要求发送方有一个已注册的 AppUserModelID，�
 
 | 命令行 | 行为 |
 |---|---|
-| `legod-pause.exe` | 后台静默进托盘（默认） |
+| `leigod-pause.exe` | 后台静默进托盘（默认） |
 | `--show` / `-w` | 打开主界面；若已在运行，通过跨进程消息请它显示窗口 |
 | `--console` / `-c` | 用 `AllocConsole` 额外开一个控制台窗口实时看日志（调试） |
 | `--hidden` / `-b` / `--tray` | 显式表示静默（自启入口写的就是它） |
@@ -243,19 +243,19 @@ Windows 的 toast 通知要求发送方有一个已注册的 AppUserModelID，�
 
 ### 7.2 开机自启
 
-写入的完整命令行是：`"D:\...\legod-pause.exe" --hidden`（路径带引号，参数表示静默）。
+写入的完整命令行是：`"D:\...\leigod-pause.exe" --hidden`（路径带引号，参数表示静默）。
 
 两条路，按顺序尝试：
 
-1. **注册表** `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 的 `LegodPause` 值（已是目标值就跳过写入，减少安全软件弹窗）；
-2. 被拒（`os error 5`，常见于 360 等）→ 回退到 **启动文件夹快捷方式** `%APPDATA%\...\Startup\legod-pause.lnk`（用 PowerShell 的 `WScript.Shell` 创建，带 `Arguments`）。
+1. **注册表** `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 的 `LeigodPause` 值（已是目标值就跳过写入，减少安全软件弹窗）；
+2. 被拒（`os error 5`，常见于 360 等）→ 回退到 **启动文件夹快捷方式** `%APPDATA%\...\Startup\leigod-pause.lnk`（用 PowerShell 的 `WScript.Shell` 创建，带 `Arguments`）。
 
 启动时 `refresh_autostart_params()` 会给**已存在且路径匹配**的旧入口补上 `--hidden`，不会新建入口、也不会改路径（避免另一个副本运行起来把自启指向自己）。
 
 ### 7.3 单实例与"再启动一次"
 
-- 互斥体 `legodpause`：第二个实例启动时发现已存在就退出；
-- 但退出前，如果带 `--show`，它会通过**跨进程消息**请第一个实例显示主窗口：`shutdown.rs` 里的 message-only 窗口（类名 `LegodPauseShutdownWnd`）收到 `WM_APP+1` 就调 `state.native_show_window()`。
+- 互斥体 `leigodpause`：第二个实例启动时发现已存在就退出；
+- 但退出前，如果带 `--show`，它会通过**跨进程消息**请第一个实例显示主窗口：`shutdown.rs` 里的 message-only 窗口（类名 `LeigodPauseShutdownWnd`）收到 `WM_APP+1` 就调 `state.native_show_window()`。
 - 为什么不直接对别人的窗口 `ShowWindow`？因为 winit 内部记着"窗口是隐藏的"，被外部强行显示后状态就对不上了——**再点 X 收不回托盘**（实测）。
 
 ---
@@ -309,19 +309,19 @@ curl http://127.0.0.1:18100/status
 
 ### 9.2 命名管道
 
-`\\.\pipe\legod-sms-code`，每行一条指令：`sms` = 触发发码；纯数字（≥4 位）= 提交验证码登录。
+`\\.\pipe\leigod-sms-code`，每行一条指令：`sms` = 触发发码；纯数字（≥4 位）= 提交验证码登录。
 
 ### 9.3 CLI
 
 ```
-legod-pause.exe info      查询账号/暂停状态（打印原始 JSON）
-legod-pause.exe pause     立即暂停计时
-legod-pause.exe resume    恢复计时
-legod-pause.exe sms       触发下发短信验证码
-legod-pause.exe code <验证码>
-legod-pause.exe status    本机 /status 的返回
-legod-pause.exe steam     列出已安装的 Steam 游戏（验证扫描）
-legod-pause.exe autostart [on|off|status]
+leigod-pause.exe info      查询账号/暂停状态（打印原始 JSON）
+leigod-pause.exe pause     立即暂停计时
+leigod-pause.exe resume    恢复计时
+leigod-pause.exe sms       触发下发短信验证码
+leigod-pause.exe code <验证码>
+leigod-pause.exe status    本机 /status 的返回
+leigod-pause.exe steam     列出已安装的 Steam 游戏（验证扫描）
+leigod-pause.exe autostart [on|off|status]
 ```
 
 ---
@@ -345,15 +345,15 @@ legod-pause.exe autostart [on|off|status]
 ## 11. 构建、调试、测试
 
 ```bash
-cargo build            # 调试构建（target/debug/legod-pause.exe）
+cargo build            # 调试构建（target/debug/leigod-pause.exe）
 cargo test             # 单元测试（签名算法、Steam vdf 解析、剪贴板 token 提取）
-cargo build --release  # 发布单 exe（内嵌图标，target/release/legod-pause.exe）
+cargo build --release  # 发布单 exe（内嵌图标，target/release/leigod-pause.exe）
 ```
 
 调试要点：
 
-- **日志**：exe 同目录 `legod_rs.log`（UTF-8，用 VSCode 打开；GBK 终端 `type` 会乱码）。每次启动都有一行「启动模式：…；控制台：…」，能直接看出是静默还是带控制台。
-- **看实时日志**：`legod-pause.exe --console` 开一个控制台窗口跟着滚。
+- **日志**：exe 同目录 `leigod_rs.log`（UTF-8，用 VSCode 打开；GBK 终端 `type` 会乱码）。每次启动都有一行「启动模式：…；控制台：…」，能直接看出是静默还是带控制台。
+- **看实时日志**：`leigod-pause.exe --console` 开一个控制台窗口跟着滚。
 - **界面机械化验证脚本**（`scripts/`，纯 ASCII，避免 PowerShell 按 GBK 解码脚本出错）：
   - `check_windows.ps1 -TargetPid <pid>`：列出该进程所有顶层窗口及可见性，用来确认"静默启动"是真的没有可见窗口；
   - `hide_main_window.ps1 -TargetPid <pid>`：向主窗口发 `WM_CLOSE`（等价于点 X，应隐藏到托盘）；
