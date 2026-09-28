@@ -22,6 +22,45 @@ enum Page {
     Logs,
 }
 
+/// 语义色：egui 内置的 LIGHT_BLUE / LIGHT_GREEN 在浅色主题的白底上太淡，
+/// 这里按当前主题（深/浅）各给一套，保证两边都看得清。
+mod tone {
+    use eframe::egui::{Color32, Ui};
+
+    fn pick(ui: &Ui, dark: Color32, light: Color32) -> Color32 {
+        if ui.visuals().dark_mode {
+            dark
+        } else {
+            light
+        }
+    }
+
+    /// 成功 / 正常
+    pub fn ok(ui: &Ui) -> Color32 {
+        pick(ui, Color32::from_rgb(130, 220, 130), Color32::from_rgb(0, 115, 45))
+    }
+
+    /// 提示信息（最近操作等）
+    pub fn info(ui: &Ui) -> Color32 {
+        pick(ui, Color32::from_rgb(140, 195, 255), Color32::from_rgb(0, 80, 160))
+    }
+
+    /// 需要注意但不致命
+    pub fn warn(ui: &Ui) -> Color32 {
+        pick(ui, Color32::from_rgb(255, 205, 90), Color32::from_rgb(150, 85, 0))
+    }
+
+    /// 错误 / 失效
+    pub fn err(ui: &Ui) -> Color32 {
+        pick(ui, Color32::from_rgb(255, 130, 130), Color32::from_rgb(175, 25, 25))
+    }
+
+    /// 次要文字
+    pub fn muted(ui: &Ui) -> Color32 {
+        pick(ui, Color32::from_rgb(170, 170, 170), Color32::from_rgb(105, 105, 105))
+    }
+}
+
 pub struct App {
     ctx: egui::Context,
     state: Arc<AppState>,
@@ -356,7 +395,7 @@ impl App {
         if pending {
             let reason = self.state.pending_reason.lock().unwrap().clone();
             ui.colored_label(
-                egui::Color32::YELLOW,
+                tone::warn(ui),
                 format!("⚠ 暂停请求挂起：{reason}。更新 token 后将自动重试。"),
             );
             ui.separator();
@@ -364,11 +403,11 @@ impl App {
 
         ui.horizontal(|ui| {
             let (dot, text) = if self.state.token().is_empty() {
-                (egui::Color32::GRAY, "未配置 token")
+                (tone::muted(ui), "未配置 token")
             } else if token_valid {
-                (egui::Color32::LIGHT_GREEN, "token 有效")
+                (tone::ok(ui), "token 有效")
             } else {
-                (egui::Color32::RED, "token 失效（请到「登录」页更新）")
+                (tone::err(ui), "token 失效（请到「登录」页更新）")
             };
             let (resp, painter) = ui.allocate_painter(egui::vec2(14.0, 14.0), egui::Sense::hover());
             painter.circle_filled(resp.rect.center(), 5.0, dot);
@@ -406,7 +445,7 @@ impl App {
         });
 
         ui.add_space(8.0);
-        ui.colored_label(egui::Color32::LIGHT_BLUE, format!("最近操作：{last_api}"));
+        ui.colored_label(tone::info(ui), format!("最近操作：{last_api}"));
     }
 
     fn add_rule(&mut self, rule: String) {
@@ -527,7 +566,7 @@ impl App {
                 });
             if self.game_rules.is_empty() {
                 ui.colored_label(
-                    egui::Color32::YELLOW,
+                    tone::warn(ui),
                     "列表为空：不会自动暂停任何游戏，请添加规则或开启 Steam 自动识别。",
                 );
             }
@@ -676,7 +715,7 @@ impl App {
                 }
             });
             if !self.settings_msg.is_empty() {
-                ui.colored_label(egui::Color32::LIGHT_GREEN, &self.settings_msg);
+                ui.colored_label(tone::ok(ui), &self.settings_msg);
             }
             ui.add_space(8.0);
             ui.small("提示：端口修改需重启程序生效；宽限期内启动游戏会取消暂停；保存后 Steam 自动识别立即生效。");
@@ -713,7 +752,13 @@ impl App {
 
         let msg = self.login_msg.lock().unwrap().clone();
         if !msg.is_empty() {
-            ui.colored_label(egui::Color32::LIGHT_GREEN, msg);
+            // 失败信息里带「失败/出错」等字样时用警示色，其余按成功色
+            let color = if msg.contains("失败") || msg.contains("出错") || msg.contains("请先") {
+                tone::warn(ui)
+            } else {
+                tone::ok(ui)
+            };
+            ui.colored_label(color, msg);
         }
 
         let key = self.state.smscode_key();
