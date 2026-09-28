@@ -89,6 +89,7 @@ pub struct App {
     autostart: bool,
     auto_recover: bool,
     auto_steam: bool,
+    clip_watch: bool,
     settings_msg: String,
     // Steam 扫描
     steam_games: Arc<Mutex<Vec<crate::steam::SteamGame>>>,
@@ -107,6 +108,8 @@ pub struct App {
     login_busy: Arc<std::sync::atomic::AtomicBool>,
     /// 最近一次「复制命令」的时间（用于短暂显示已复制提示）
     copied_at: Option<std::time::Instant>,
+    /// 剪贴板监听到期时间（Some 且未过期 = 正在监听）
+    clip_deadline: Arc<Mutex<Option<std::time::Instant>>>,
 }
 
 impl App {
@@ -170,6 +173,7 @@ impl App {
             autostart: true,
             auto_recover: false,
             auto_steam: true,
+            clip_watch: false,
             settings_msg: String::new(),
             steam_games: Arc::new(Mutex::new(Vec::new())),
             steam_scanning: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -183,6 +187,7 @@ impl App {
             login_msg: Arc::new(Mutex::new(String::new())),
             login_busy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             copied_at: None,
+            clip_deadline: Arc::new(Mutex::new(None)),
         };
         app.tray = tray::build(&app.state.monitor.lock().unwrap().tooltip_text()).ok();
         // 捕获原生窗口句柄，供原生 ShowWindow 使用
@@ -196,6 +201,13 @@ impl App {
         })();
         app.state.set_gui_handles(cc.egui_ctx.clone(), app.native_hwnd);
         Self::install_cjk_font(&cc.egui_ctx);
+        // 剪贴板监听线程常驻，靠 deadline 决定是否工作（见 clipboard.rs）
+        crate::clipboard::spawn_watcher(
+            app.state.clone(),
+            cc.egui_ctx.clone(),
+            app.clip_deadline.clone(),
+            app.login_msg.clone(),
+        );
         log(
             &app.state,
             &format!(
@@ -229,6 +241,7 @@ impl App {
         self.autostart = config::is_autostart();
         self.auto_recover = cfg.auto_recover;
         self.auto_steam = cfg.auto_steam;
+        self.clip_watch = cfg.clip_watch;
         self.settings_loaded = true;
     }
 
@@ -248,6 +261,7 @@ impl App {
             cfg.http_port = self.http_port;
             cfg.auto_recover = self.auto_recover;
             cfg.auto_steam = self.auto_steam;
+            cfg.clip_watch = self.clip_watch;
             let path = self.state.config_path.clone();
             match cfg.save(&path) {
                 Ok(()) => {}
@@ -709,7 +723,16 @@ impl App {
                     ui.label("游戏启动时自动恢复加速");
                     ui.checkbox(&mut self.auto_recover, "");
                     ui.end_row();
+
+                    ui.label("剪贴板自动识别 token");
+                    ui.checkbox(&mut self.clip_watch, "");
+                    ui.end_row();
                 });
+
+            ui.small(
+                "剪贴板自动识别：开启后，在登录页点「复制命令」会在 30 秒内监听剪贴板，\
+                 识别到 token 先调接口验证，验证通过才保存（默认关闭）。",
+            );
 
             ui.add_space(8.0);
             ui.horizontal(|ui| {
@@ -782,16 +805,52 @@ impl App {
                 .selectable(true),
         );
         ui.horizontal(|ui| {
+            let clip_watch_on = self.clip_watch || self.cfg.read().unwrap().clip_watch;
             if ui.button("📋 复制命令").clicked() {
                 ui.ctx().copy_text(TOKEN_CONSOLE_CMD.to_string());
                 self.copied_at = Some(std::time::Instant::now());
+                if clip_watch_on {
+                    *self.clip_deadline.lock().unwrap() = Some(
+                        std::time::Instant::now()
+                            + std::time::Duration::from_secs(crate::clipboard::WATCH_SECONDS),
+                    );
+                    log(
+                        &self.state,
+                        &format!(
+                            "已开启 {} 秒剪贴板监听：识别到 token 会先验证再保存",
+                            crate::clipboard::WATCH_SECONDS
+                        ),
+                    );
+                }
             }
             if let Some(t) = self.copied_at {
                 if t.elapsed().as_secs_f32() < 2.5 {
-                    ui.colored_label(tone::ok(ui), "已复制，粘贴到浏览器控制台回车");
+                    let hint = if clip_watch_on {
+                        "已复制，粘贴到浏览器控制台回车，结果复制回来即可"
+                    } else {
+                        "已复制，粘贴到浏览器控制台回车（可在设置里开启剪贴板自动识别）"
+                    };
+                    ui.colored_label(tone::ok(ui), hint);
                 }
             }
         });
+        // 监听中：显示剩余秒数（到期由 GUI 线程清掉标记）
+        {
+            let mut dl = self.clip_deadline.lock().unwrap();
+            match *dl {
+                Some(d) if d > std::time::Instant::now() => {
+                    let left = d
+                        .saturating_duration_since(std::time::Instant::now())
+                        .as_secs();
+                    ui.colored_label(
+                        tone::info(ui),
+                        format!("🔍 正在监听剪贴板，剩余 {left} 秒…识别到 token 会自动验证并保存"),
+                    );
+                }
+                Some(_) => *dl = None,
+                None => {}
+            }
+        }
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             ui.add(

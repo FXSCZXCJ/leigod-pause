@@ -18,6 +18,7 @@
 
 mod actions;
 mod api;
+mod clipboard;
 mod code_api;
 mod config;
 mod events;

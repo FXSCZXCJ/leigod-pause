@@ -33,6 +33,8 @@ pub struct Config {
     pub auto_recover: bool,
     /// 自动识别：Steam 库内运行的程序视为游戏（默认开）
     pub auto_steam: bool,
+    /// 剪贴板自动识别 token：登录页点「复制命令」后 30 秒内监听剪贴板（默认关）
+    pub clip_watch: bool,
     /// 最近一次短信验证码标识（跨通道共享）
     pub smscode_key: String,
     /// smscode_key 过期时间（展示用）
@@ -55,6 +57,7 @@ impl Default for Config {
             autostart: true,
             auto_recover: false,
             auto_steam: true,
+            clip_watch: false,
             smscode_key: String::new(),
             sms_expiry: String::new(),
         }
@@ -123,6 +126,9 @@ impl Config {
         if let Some(v) = get("auto_steam") {
             cfg.auto_steam = v == "1" || v.eq_ignore_ascii_case("true");
         }
+        if let Some(v) = get("clip_watch") {
+            cfg.clip_watch = v == "1" || v.eq_ignore_ascii_case("true");
+        }
         if let Some(v) = get("smscode_key") {
             cfg.smscode_key = v;
         }
@@ -147,6 +153,7 @@ impl Config {
             .set("autostart", if self.autostart { "1" } else { "0" })
             .set("auto_recover", if self.auto_recover { "1" } else { "0" })
             .set("auto_steam", if self.auto_steam { "1" } else { "0" })
+            .set("clip_watch", if self.clip_watch { "1" } else { "0" })
             .set("account_token", &self.account_token)
             .set("smscode_key", &self.smscode_key)
             .set("sms_expiry", &self.sms_expiry);
