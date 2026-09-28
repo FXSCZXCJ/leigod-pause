@@ -82,6 +82,8 @@ pub struct App {
     // 设置页编辑缓冲
     game_rules: Vec<String>,
     new_rule: String,
+    blacklist_rules: Vec<String>,
+    new_black: String,
     grace: u64,
     update: u64,
     lepath: String,
@@ -170,6 +172,8 @@ impl App {
             settings_loaded: false,
             game_rules: Vec::new(),
             new_rule: String::new(),
+            blacklist_rules: Vec::new(),
+            new_black: String::new(),
             grace: 180,
             update: 1,
             lepath: String::new(),
@@ -272,6 +276,7 @@ impl App {
     fn load_settings_buf(&mut self) {
         let cfg = self.cfg.read().unwrap().clone();
         self.game_rules = cfg.games.clone();
+        self.blacklist_rules = cfg.blacklist.clone();
         self.grace = cfg.grace;
         self.update = cfg.update;
         self.lepath = cfg.lepath.clone();
@@ -293,6 +298,13 @@ impl App {
                 .filter(|s| !s.is_empty())
                 .collect();
             self.game_rules = cfg.games.clone();
+            cfg.blacklist = self
+                .blacklist_rules
+                .iter()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            self.blacklist_rules = cfg.blacklist.clone();
             cfg.grace = self.grace.clamp(10, 600);
             cfg.update = self.update.max(1);
             cfg.lepath = self.lepath.trim().trim_matches('"').to_string();
@@ -528,6 +540,23 @@ impl App {
         self.settings_msg = format!("已添加（点「保存并应用」生效）：{rule}");
     }
 
+    fn add_black(&mut self, entry: String) {
+        let entry = entry.trim().trim_matches('\\').trim().to_string();
+        if entry.is_empty() {
+            return;
+        }
+        let dup = self
+            .blacklist_rules
+            .iter()
+            .any(|b| b.eq_ignore_ascii_case(&entry));
+        if dup {
+            self.settings_msg = format!("排除项已存在：{entry}");
+            return;
+        }
+        self.blacklist_rules.push(entry.clone());
+        self.settings_msg = format!("已添加（点「保存并应用」生效）：{entry}");
+    }
+
     fn spawn_steam_scan(&mut self) {
         if self.steam_scanning.load(Ordering::SeqCst) {
             return;
@@ -730,6 +759,46 @@ impl App {
                         }
                     });
             }
+
+            ui.add_space(8.0);
+            ui.separator();
+            ui.heading("排除名单（黑名单）");
+            ui.small("命中的进程名或目录名永不算游戏（优先于一切规则），用于排除 Steam 库里的非游戏软件。");
+            ui.small("内置默认：wallpaper_engine / wallpaper32 / wallpaper64（壁纸引擎）。");
+            egui::ScrollArea::vertical()
+                .id_salt("blacklist_list")
+                .max_height(100.0)
+                .show(ui, |ui| {
+                    let mut to_remove: Option<usize> = None;
+                    for (i, entry) in self.blacklist_rules.iter().enumerate() {
+                        ui.horizontal(|ui| {
+                            ui.label(format!("🚫 {entry}"));
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui.small_button("删除").clicked() {
+                                        to_remove = Some(i);
+                                    }
+                                },
+                            );
+                        });
+                    }
+                    if let Some(i) = to_remove {
+                        self.blacklist_rules.remove(i);
+                    }
+                });
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.new_black)
+                        .desired_width(260.0)
+                        .hint_text("进程名或目录名，如 wallpaper_engine"),
+                );
+                if ui.button("添加排除").clicked() {
+                    let e = self.new_black.clone();
+                    self.new_black.clear();
+                    self.add_black(e);
+                }
+            });
 
             ui.add_space(8.0);
             ui.separator();

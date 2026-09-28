@@ -31,7 +31,7 @@ API 现状调研与实测结论见 [API_NOTES.md](API_NOTES.md)，想改代码�
 | 状态 | 设置 |
 |---|---|
 | ![状态页](docs/screenshots/status.png) | ![设置页](docs/screenshots/settings.png) |
-| 一眼看到 token 是否有效、账号是否已暂停、监控状态与宽限倒计时 | 游戏规则增删、Steam 自动识别、扫描运行中的程序、常规设置 |
+| 一眼看到 token 是否有效、账号是否已暂停、监控状态与宽限倒计时 | 游戏规则增删、Steam 自动识别、扫描运行中的程序、排除名单、常规设置 |
 
 | 登录 | 日志 |
 |---|---|
@@ -62,7 +62,8 @@ API 现状调研与实测结论见 [API_NOTES.md](API_NOTES.md)，想改代码�
 - **Steam 自动识别**（设置页独立开关，`auto_steam`，默认开），两层机制：
   - **库内程序自动视为游戏**：自动检测所有 Steam 库目录（注册表 + `libraryfolders.vdf`），运行中的程序 exe 位于任意库的 `steamapps/common` 之下即视为游戏在运行，**无需逐个添加规则**；库目录启动时加载、之后每 10 分钟刷新（覆盖中途新加装的 Steam 库），关闭开关立即失效
   - **扫描已安装的 Steam 游戏**：设置页「扫描已安装的 Steam 游戏」按钮，读取各库 `appmanifest_*.acf` 列出所有已装游戏，勾选后一键以**目录规则**（进程 exe 路径位于该游戏安装目录下即命中）加入游戏列表；自动跳过 Steamworks 运行库与 Spacewar 测试应用
-  - 判定优先级：显式进程名规则 → 显式目录规则 → Steam 库自动识别；自动识别只对 Steam 正版库生效，**非 Steam 版游戏**请用进程名或目录规则
+  - 判定优先级：黑名单 → 显式进程名规则 → 显式目录规则 → Steam 库自动识别；自动识别只对 Steam 正版库生效，**非 Steam 版游戏**请用进程名或目录规则
+- **排除名单（黑名单）**：`blacklist` 里的进程名或目录名**永不视为游戏**（优先于一切规则），用于排除 Steam 库里的非游戏软件；内置默认排除壁纸引擎（wallpaper_engine / wallpaper32 / wallpaper64），设置页「排除名单」可增删
 - **关机强制暂停**：钩住 WM_QUERYENDSESSION/WM_ENDSESSION，关机前同步调暂停接口（2s 超时 × 2 次重试）
 - **token 自动续期接口**（短信验证码双通道，供短信转发 App / 脚本全自动续 token）：
   - HTTP：`POST http://127.0.0.1:18100/token/sms`（触发发码）→ `POST /token/code`，body `{"code":"867020"}`（换新 token）
@@ -87,6 +88,7 @@ http_port = 18100            ; 验证码接口端口(新增)
 autostart = 1                ; 开机自启(新增)
 auto_recover = 0             ; 检测到游戏启动自动恢复加速(新增,默认关)
 auto_steam = 1               ; Steam 库内程序视为游戏(默认开)
+blacklist = wallpaper_engine,wallpaper32,wallpaper64  ; 排除名单：命中的进程/目录永不算游戏(内置壁纸引擎)
 clip_watch = 0               ; 剪贴板自动识别 token(默认关)
 account_token = ...          ; 登录后自动写入
 ```

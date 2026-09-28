@@ -1,5 +1,5 @@
 //! 配置文件读写：完全兼容旧版 6yy66yy/legod-auto-pause 的 config.ini 字段，
-//! 新增 grace / http_port / autostart / auto_recover / smscode_key 键。
+//! 新增 grace / http_port / autostart / auto_recover / blacklist / smscode_key 键。
 
 use std::path::{Path, PathBuf};
 
@@ -33,6 +33,8 @@ pub struct Config {
     pub auto_recover: bool,
     /// 自动识别：Steam 库内运行的程序视为游戏（默认开）
     pub auto_steam: bool,
+    /// 排除名单（黑名单）：进程名或路径中任一目录名命中即永不算游戏（优先于一切规则）
+    pub blacklist: Vec<String>,
     /// 剪贴板自动识别 token：登录页点「复制命令」后 30 秒内监听剪贴板（默认关）
     pub clip_watch: bool,
     /// 最近一次短信验证码标识（跨通道共享）
@@ -57,6 +59,11 @@ impl Default for Config {
             autostart: true,
             auto_recover: false,
             auto_steam: true,
+            blacklist: vec![
+                "wallpaper_engine".into(),
+                "wallpaper32".into(),
+                "wallpaper64".into(),
+            ],
             clip_watch: false,
             smscode_key: String::new(),
             sms_expiry: String::new(),
@@ -126,6 +133,18 @@ impl Config {
         if let Some(v) = get("auto_steam") {
             cfg.auto_steam = v == "1" || v.eq_ignore_ascii_case("true");
         }
+        if let Some(v) = get("blacklist") {
+            let parsed: Vec<String> = v
+                .replace('，', ",")
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            // 只有用户显式清空（写了空 blacklist=）才覆盖内置默认值
+            if !parsed.is_empty() {
+                cfg.blacklist = parsed;
+            }
+        }
         if let Some(v) = get("clip_watch") {
             cfg.clip_watch = v == "1" || v.eq_ignore_ascii_case("true");
         }
@@ -153,6 +172,7 @@ impl Config {
             .set("autostart", if self.autostart { "1" } else { "0" })
             .set("auto_recover", if self.auto_recover { "1" } else { "0" })
             .set("auto_steam", if self.auto_steam { "1" } else { "0" })
+            .set("blacklist", self.blacklist.join(","))
             .set("clip_watch", if self.clip_watch { "1" } else { "0" })
             .set("account_token", &self.account_token)
             .set("smscode_key", &self.smscode_key)

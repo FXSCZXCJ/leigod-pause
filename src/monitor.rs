@@ -142,7 +142,7 @@ pub fn run(state: Arc<AppState>, cfg: Arc<SharedConfig>, rx: Receiver<MonCmd>) {
 
         // 5) 进程扫描与状态机
         sys.refresh_processes();
-        let game = find_game(&sys, &conf.games, &steam_roots, conf.auto_steam);
+        let game = find_game(&sys, &conf.games, &conf.blacklist, &steam_roots, conf.auto_steam);
         let game_running = game.is_some();
 
         let prev = mode_label(&mode);
@@ -235,10 +235,27 @@ pub fn run(state: Arc<AppState>, cfg: Arc<SharedConfig>, rx: Receiver<MonCmd>) {
     }
 }
 
-/// 匹配到游戏的判定顺序：显式进程名规则 → 显式目录规则 → Steam 库自动识别
+/// 黑名单判定：进程名或 exe 路径中任一目录名命中即排除。
+/// 忽略大小写与 .exe 后缀，按完整名精确比对（避免 "game" 之类泛词误伤整库）。
+fn is_blacklisted(pname: &str, exe: &str, blacklist: &[String]) -> bool {
+    if blacklist.is_empty() {
+        return false;
+    }
+    let norm = |s: &str| s.trim().to_lowercase();
+    let entries: Vec<String> = blacklist.iter().map(|b| norm(b)).collect();
+    let hit = |name: &str| -> bool {
+        let name = norm(name);
+        let name = name.strip_suffix(".exe").unwrap_or(&name);
+        !name.is_empty() && entries.iter().any(|b| b == name)
+    };
+    hit(pname) || exe.split(['\\', '/']).any(hit)
+}
+
+/// 匹配到游戏的判定顺序：黑名单 → 显式进程名规则 → 显式目录规则 → Steam 库自动识别
 fn find_game(
     sys: &System,
     games: &[String],
+    blacklist: &[String],
     steam_roots: &[String],
     auto_steam: bool,
 ) -> Option<String> {
@@ -285,6 +302,11 @@ fn find_game(
             .exe()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
+
+        // 0) 黑名单：命中即跳过（用户明确不当作游戏的进程/目录，优先于一切规则）
+        if is_blacklisted(&pname, &exe, blacklist) {
+            continue;
+        }
 
         // 1) 显式进程名规则（与旧版一致：进程名包含 "{name}.exe"）
         for (needle, label) in &name_rules {
@@ -335,5 +357,47 @@ fn mode_label(m: &Mode) -> String {
         Mode::Idle => "无游戏".into(),
         Mode::InGame(n) => n.clone(),
         Mode::Grace { .. } => "宽限中".into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn blacklist_matches_process_name() {
+        let bl = vec!["wallpaper32".to_string()];
+        assert!(is_blacklisted(
+            "wallpaper32.exe",
+            r"c:\steam\steamapps\common\wallpaper_engine\wallpaper32.exe",
+            &bl
+        ));
+        assert!(!is_blacklisted(
+            "notepad.exe",
+            r"c:\windows\system32\notepad.exe",
+            &bl
+        ));
+    }
+
+    #[test]
+    fn blacklist_matches_path_component() {
+        let bl = vec!["wallpaper_engine".to_string()];
+        assert!(is_blacklisted(
+            "launcher.exe",
+            r"d:\steamlibrary\steamapps\common\wallpaper_engine\launcher.exe",
+            &bl
+        ));
+        // 前缀相近但不是完整目录名：不误伤
+        assert!(!is_blacklisted(
+            "game.exe",
+            r"d:\steamlibrary\steamapps\common\wallpaper_engine_hd\game.exe",
+            &bl
+        ));
+    }
+
+    #[test]
+    fn blacklist_case_insensitive_and_empty() {
+        assert!(is_blacklisted("WALLPAPER64.EXE", "", &["Wallpaper64".to_string()]));
+        assert!(!is_blacklisted("anything.exe", r"c:\x\anything.exe", &[]));
     }
 }
