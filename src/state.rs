@@ -160,7 +160,11 @@ impl AppState {
 /// 追加一行日志：写入 exe 同目录 legod_rs.log + 内存缓冲
 pub fn log(state: &AppState, msg: &str) {
     let line = format!("[{}] {}", Local::now().format("%Y-%m-%d %H:%M:%S"), msg);
-    println!("{}", line);
+    // GUI 子系统下可能没有控制台，写 stdout 失败属正常，不能让它 panic
+    {
+        use std::io::Write;
+        let _ = writeln!(std::io::stdout(), "{}", line);
+    }
     let mut buf = state.log_buf.lock().unwrap();
     if buf.len() >= 500 {
         buf.pop_front();

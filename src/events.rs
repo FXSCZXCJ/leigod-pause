@@ -39,8 +39,9 @@ pub fn init_toast_identity() -> String {
 }
 
 fn log_state(msg: &str) {
-    // 由 main 在状态创建后调用，这里兜底直接输出
-    println!("[aumid] {msg}");
+    // 由 main 在状态创建后调用，这里兜底直接输出（无控制台时写 stdout 会失败，忽略）
+    use std::io::Write;
+    let _ = writeln!(std::io::stdout(), "[aumid] {msg}");
 }
 
 fn aumid_lnk_path() -> std::path::PathBuf {

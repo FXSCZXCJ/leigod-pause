@@ -11,12 +11,17 @@ use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, PostQuitMessage,
-    RegisterClassW, TranslateMessage, HMENU, MSG, WINDOW_EX_STYLE, WINDOW_STYLE, WM_DESTROY,
-    WM_ENDSESSION, WM_QUERYENDSESSION, WNDCLASSW, HWND_MESSAGE,
+    RegisterClassW, TranslateMessage, HMENU, MSG, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP,
+    WM_DESTROY, WM_ENDSESSION, WM_QUERYENDSESSION, WNDCLASSW, HWND_MESSAGE,
 };
 
 use crate::actions;
 use crate::state::{log, AppState};
+
+/// message-only 控制窗口的类名（其它实例按这个类名找窗口，见 main.rs 的 --show）
+pub const CONTROL_WINDOW_CLASS: windows::core::PCWSTR = w!("LegodPauseShutdownWnd");
+/// 第二个实例发这个消息，请已运行实例把主界面显示出来
+pub const WM_SHOW_MAIN_WINDOW: u32 = WM_APP + 1;
 
 static SHUTDOWN_PAUSE_DONE: AtomicBool = AtomicBool::new(false);
 
@@ -120,6 +125,13 @@ unsafe extern "system" fn wndproc(
         }
         WM_DESTROY => {
             PostQuitMessage(0);
+            LRESULT(0)
+        }
+        WM_SHOW_MAIN_WINDOW => {
+            if let Some(state) = APP_STATE.get() {
+                log(state, "收到另一实例的「显示主界面」请求");
+                state.native_show_window();
+            }
             LRESULT(0)
         }
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),

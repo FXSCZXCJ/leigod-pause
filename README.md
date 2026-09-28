@@ -5,6 +5,10 @@ API 现状调研与实测结论见 [API_NOTES.md](API_NOTES.md)。
 
 ## 功能
 
+- **启动即静默**：编译为 GUI 子系统程序，双击 / 开机自启都不弹控制台、不弹界面，直接进托盘
+  - `legod-pause.exe`：后台静默运行（默认，开机自启入口就写这个参数 `--hidden`）
+  - `legod-pause.exe --show`：启动时打开主界面；若程序已在运行则把主界面叫到前台
+  - `legod-pause.exe --console`：额外开一个控制台窗口实时看日志（调试用）
 - **托盘常驻**：右键菜单（打开主界面 / 暂停时长 / 恢复时长 / 打开雷神 / 退出并暂停 / 退出），tooltip 实时显示监控状态，状态变化弹 Windows 通知
 - **主界面**（egui 四页签）：
   - 状态：token 灯 / 账号暂停状态 / 监控状态与宽限倒计时 / 手动暂停·恢复·查询按钮
@@ -18,6 +22,7 @@ API 现状调研与实测结论见 [API_NOTES.md](API_NOTES.md)。
   - 命名管道：`\\.\pipe\legod-sms-code`，每行一条，`sms`=触发发码，纯数字=提交验证码
   - `GET /status` 实时状态、`GET /health` 存活探测
 - **CLI**：`legod-pause.exe info|pause|resume|sms|code <验证码>|status|help`
+  （在终端里运行会自动接上父控制台，输出照常显示；`| more`、`> out.txt` 重定向也可用）
 - token 失效时暂停请求**挂起**，任意通道更新 token 后自动补暂停
 
 ## 配置
