@@ -15,9 +15,12 @@ body = """
 {% for group, commits in commits | group_by(attribute="group") %}\
 \n### {{ group | upper_first }}\n
 {% for commit in commits %}\
-- {% if commit.breaking %}**⚠️ 不兼容变更：** {% endif %}{% if commit.scope %}**{{ commit.scope }}：** {% endif %}{{ commit.message | upper_first }}（{{ commit.id | truncate(length=7, end="") }}）
+- {% if commit.breaking %}**⚠️ 不兼容变更：** {% endif %}{% if commit.scope %}**{{ commit.scope }}：** {% endif %}{{ commit.message | upper_first }}（[{{ commit.id | truncate(length=7, end="") }}](https://github.com/FXSCZXCJ/leigod-pause/commit/{{ commit.id }})）
 {% endfor %}\
 {% endfor %}\
+{% if version and previous.version %}\
+\n**完整变更**：https://github.com/FXSCZXCJ/leigod-pause/compare/{{ previous.version }}...{{ version }}
+{% endif %}\
 """
 trim = true
 
