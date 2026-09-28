@@ -1,7 +1,30 @@
 # legod-pause — 雷神加速器时长自动暂停 (Rust 版 v3.0)
 
 原 Python 项目 [6yy66yy/legod-auto-pause](https://github.com/6yy66yy/legod-auto-pause) 的 Rust 重写版。
-API 现状调研与实测结论见 [API_NOTES.md](API_NOTES.md)。
+API 现状调研与实测结论见 [API_NOTES.md](API_NOTES.md)，想改代码先看 [ARCHITECTURE.md](ARCHITECTURE.md)（写给 Rust 新手的架构说明）。
+
+---
+
+## ⚠️ 安全与隐私须知（配置为明文存储）
+
+**`config.ini` 里的敏感信息全部是明文，没有任何加密或混淆**：
+
+| 字段 | 内容 | 泄露后果 |
+|---|---|---|
+| `uname` | 手机号 | 隐私泄露，可能被用于撞库/骚扰 |
+| `password` | MD5 密码（旧版兼容字段，当前登录链路不使用） | 弱密码可被爆破 |
+| `account_token` | 账号登录态凭据 | **持有效期内可直接操作你的账号**（查询/暂停/恢复），等于账号被借用 |
+| `smscode_key` | 最近一次短信验证码标识 | 配合短信码可在有效期内换到新 token |
+
+因此：
+
+- **不要把 `config.ini` 上传、分享、截图或提交到 Git**（本仓库 `.gitignore` 已排除 `config.ini`、`config-dev.ini`、`*.log`，但**克隆别人的仓库/自己 fork 时请再确认一次**）；
+- 建议把程序放在**个人目录**，不要放在共享目录或会被自动同步到云端的目录（OneDrive / 坚果云 / 网盘同步目录）；
+- 日志 `legod_rs.log` 里手机号已打码（形如 `135****81`），但**仍包含操作记录**，分享日志前请自己过一眼；
+- **剪贴板自动识别功能**开启后，token 会短暂停留在系统剪贴板里；Windows 的剪贴板历史（`Win+V`）和「跨设备云剪贴板」可能把它记录下来，敏感环境下请在设置里关闭该功能，或事后用 `Win+V` 清掉；
+- 该文件等同账号钥匙：**转移/卸载/送修前记得删除**；怀疑泄露就去官网重新登录一次，旧 token 会随之失效。
+
+---
 
 ## 功能
 
@@ -53,11 +76,38 @@ account_token = ...          ; 登录后自动写入
 
 ## 开发
 
+环境要求：**Windows 10/11**（程序大量使用 Windows API，不支持其它平台）+ Rust 工具链（stable，本项目在 1.95 上开发；MSVC 或 GNU 工具链均可，构建脚本用 `winresource` 往 exe 里嵌图标，需要系统有 `windres`/`rc` 等资源编译器）。
+
 ```bash
 cargo build          # 调试构建
-cargo test           # 单元测试（签名算法）
+cargo test           # 单元测试（签名算法、Steam vdf 解析、剪贴板 token 提取）
 cargo build --release # 发布单 exe（内嵌图标）
 ```
 
-测试脚本：`scripts/test_shutdown_msg.ps1`（向运行中的程序发送 WM_QUERYENDSESSION 模拟关机）。
-日志文件 `legod_rs.log`（UTF-8，建议用 VSCode 等查看，GBK 终端 type 会乱码）。
+架构、模块职责、线程模型、常见修改指引见 [ARCHITECTURE.md](ARCHITECTURE.md)。
+
+测试/验证脚本（都在 `scripts/`）：
+
+| 脚本 | 用途 |
+|---|---|
+| `test_shutdown_msg.ps1` | 向运行中的程序发 `WM_QUERYENDSESSION`，模拟关机，验证关机强制暂停 |
+| `check_windows.ps1` | 按 PID 列出程序的所有顶层窗口与可见性，确认"静默启动"确实没有可见窗口 |
+| `hide_main_window.ps1` | 按 PID 向主窗口发 `WM_CLOSE`（等价于点 X，应隐藏到托盘） |
+| `screenshot_window.ps1` | 用 `PrintWindow` 只截程序窗口（不抓桌面内容），验证界面配色/字体 |
+| `click_client.ps1` | 向窗口客户区发送一次点击（GUI 验证用，注意 egui 对注入点击的响应有限） |
+
+日志文件 `legod_rs.log`（UTF-8，建议用 VSCode 等查看，GBK 终端 `type` 会乱码）。
+
+---
+
+## 免责声明
+
+1. **非官方项目**：本工具是个人自用的第三方实现，与雷神加速器（Leigod）及其关联公司**没有任何关系**，未获得其授权、赞助或认可，也不是其官方产品。
+2. **接口来自观察与实测**：程序通过官方网页前端所使用的 HTTP 接口实现功能（相关记录见 [API_NOTES.md](API_NOTES.md)）。这些接口**并非公开 API，可能随时变更、限流或失效**，作者不承诺可用性，也不负责随之而来的功能中断。
+3. **使用风险自负**：因使用本工具（包括但不限于自动暂停/恢复计时、自动读取剪贴板、写入开机自启）可能导致的**账号异常、被风控/封禁、时长或权益异常、数据丢失**等任何直接或间接后果，**由使用者自行承担**，作者不承担任何责任。
+4. **请遵守规则与法律**：使用前请自行确认是否符合雷神加速器的用户协议及你所在地区的法律法规。**请勿用于商业用途、批量账号操作或任何绕过官方限制的场景。**
+5. **配置明文存储的固有风险**：如上一节所述，`config.ini` 明文保存手机号与 `account_token`，请自行保护好该文件；因文件泄露造成的损失与作者无关。
+6. **无担保**：本软件按"现状"（AS IS）提供，不附带任何明示或暗示的担保，包括但不限于适销性、特定用途适用性与不侵权担保。
+7. **致谢与更正**：思路与配置格式源自 [6yy66yy/legod-auto-pause](https://github.com/6yy66yy/legod-auto-pause)。若相关权利方认为本项目存在不妥，请联系作者，我们会及时处理（停止分发或删除相关内容）。
+
+下载、编译或运行本程序，即表示你已阅读、理解并同意以上条款。

@@ -276,35 +276,39 @@ fn on_clipboard_update() {
 mod tests {
     use super::*;
 
+    // 示例 token 一律用假值：本仓库会开源，真实 token 绝不能进代码
+    const FAKE_TOKEN: &str = "AbCdEfGh1234567890XyZ98765";
+    const FAKE_TOKEN_LONG: &str =
+        "AaBbCcDdEeFfGgHh1234567890IiJjKkLlMmNnOoPpQqRrSsTtUuVvWwXxYyZz0123456789";
+
     #[test]
     fn extracts_raw_token() {
         assert_eq!(
-            extract_token("  AbCdEfGh1234567890XyZ98765 \r\n").unwrap(),
-            "AbCdEfGh1234567890XyZ98765"
+            extract_token(&format!("  {FAKE_TOKEN} \r\n")).unwrap(),
+            FAKE_TOKEN
         );
         assert_eq!(
-            extract_token("\"AbCdEfGh1234567890XyZ98765\"").unwrap(),
-            "AbCdEfGh1234567890XyZ98765"
+            extract_token(&format!("\"{FAKE_TOKEN}\"")).unwrap(),
+            FAKE_TOKEN
         );
     }
 
     #[test]
     fn extracts_from_json() {
-        let json = r#"{"account_token":"AaBbCcDdEeFfGgHh1234567890IiJjKkLlMmNnOoPpQqRrSsTtUuVvWwXxYyZz0123456789","uid":123}"#;
-        assert_eq!(
-            extract_token(json).unwrap(),
-            "AaBbCcDdEeFfGgHh1234567890IiJjKkLlMmNnOoPpQqRrSsTtUuVvWwXxYyZz0123456789"
-        );
+        let json = format!(r#"{{"account_token":"{FAKE_TOKEN_LONG}","uid":123}}"#);
+        assert_eq!(extract_token(&json).unwrap(), FAKE_TOKEN_LONG);
     }
 
     #[test]
     fn ignores_page_text_and_short_strings() {
         // 整页文本（多行）不能误判
-        assert!(extract_token("手动填入 token\n浏览器登录 www.leigod.com 后，F12 Console 执行：").is_none());
+        assert!(
+            extract_token("手动填入 token\n浏览器登录 www.leigod.com 后，F12 Console 执行：").is_none()
+        );
         // 太短
         assert!(extract_token("abc123").is_none());
         // 含空格
-        assert!(extract_token("AbCdEfGh1234567890XyZ98765 AbCdEfGh1234567890XyZ98765").is_none());
+        assert!(extract_token(&format!("{FAKE_TOKEN} {FAKE_TOKEN}")).is_none());
         // 中文
         assert!(extract_token("这是一段中文说明文字啊啊啊啊啊啊").is_none());
     }
