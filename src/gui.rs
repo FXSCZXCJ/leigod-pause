@@ -108,6 +108,10 @@ pub struct App {
     login_busy: Arc<std::sync::atomic::AtomicBool>,
     /// 最近一次「复制命令」的时间（用于短暂显示已复制提示）
     copied_at: Option<std::time::Instant>,
+    /// 最近一次复制是否由「进入登录页自动复制」触发（提示文案不同）
+    copied_auto: bool,
+    /// 本次停留在登录页是否已自动复制过（避免每帧重复复制）
+    login_auto_copied: bool,
     /// 剪贴板监听到期时间（Some 且未过期 = 正在监听）
     clip_deadline: Arc<Mutex<Option<std::time::Instant>>>,
 }
@@ -187,6 +191,8 @@ impl App {
             login_msg: Arc::new(Mutex::new(String::new())),
             login_busy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             copied_at: None,
+            copied_auto: false,
+            login_auto_copied: false,
             clip_deadline: Arc::new(Mutex::new(None)),
         };
         app.tray = tray::build(&app.state.monitor.lock().unwrap().tooltip_text()).ok();
@@ -225,6 +231,38 @@ impl App {
 
     fn send_mon(&self, cmd: MonCmd) {
         let _ = self.mon_tx.send(cmd);
+    }
+
+    /// 把取 token 的命令复制到剪贴板；auto=true 表示「进登录页自动复制」触发。
+    /// 剪贴板自动识别开着时，顺手开启 30 秒监听，形成闭环。
+    fn copy_token_cmd(&mut self, ctx: &egui::Context, auto: bool) {
+        ctx.copy_text(TOKEN_CONSOLE_CMD.to_string());
+        self.copied_at = Some(std::time::Instant::now());
+        self.copied_auto = auto;
+        let watch_on = self.clip_watch || self.cfg.read().unwrap().clip_watch;
+        if watch_on {
+            *self.clip_deadline.lock().unwrap() = Some(
+                std::time::Instant::now()
+                    + std::time::Duration::from_secs(crate::clipboard::WATCH_SECONDS),
+            );
+        }
+        log(
+            &self.state,
+            if auto {
+                "进入登录页：取 token 命令已自动复制到剪贴板"
+            } else {
+                "已复制取 token 命令到剪贴板"
+            },
+        );
+        if watch_on {
+            log(
+                &self.state,
+                &format!(
+                    "已开启 {} 秒剪贴板监听：识别到 token 会先验证再保存",
+                    crate::clipboard::WATCH_SECONDS
+                ),
+            );
+        }
     }
 
     fn open_leigod(&self) {
@@ -376,6 +414,10 @@ impl eframe::App for App {
         // ---- UI ----
         if !self.settings_loaded {
             self.load_settings_buf();
+        }
+        // 离开登录页后，下次再进来重新自动复制一次命令
+        if self.page != Page::Login {
+            self.login_auto_copied = false;
         }
         if self.phone.is_empty() {
             self.phone = self.cfg.read().unwrap().uname.clone();
@@ -753,6 +795,12 @@ impl App {
     }
 
     fn ui_login(&mut self, ui: &mut egui::Ui) {
+        // 进登录页自动把命令放进剪贴板（本次停留只做一次，避免每帧覆盖剪贴板）
+        if !self.login_auto_copied {
+            self.login_auto_copied = true;
+            let ctx = ui.ctx().clone();
+            self.copy_token_cmd(&ctx, true);
+        }
         ui.heading("短信验证码登录");
         ui.label("token 失效后在此重新登录；验证码会以短信发送到手机。");
         ui.add_space(6.0);
@@ -807,25 +855,15 @@ impl App {
         ui.horizontal(|ui| {
             let clip_watch_on = self.clip_watch || self.cfg.read().unwrap().clip_watch;
             if ui.button("📋 复制命令").clicked() {
-                ui.ctx().copy_text(TOKEN_CONSOLE_CMD.to_string());
-                self.copied_at = Some(std::time::Instant::now());
-                if clip_watch_on {
-                    *self.clip_deadline.lock().unwrap() = Some(
-                        std::time::Instant::now()
-                            + std::time::Duration::from_secs(crate::clipboard::WATCH_SECONDS),
-                    );
-                    log(
-                        &self.state,
-                        &format!(
-                            "已开启 {} 秒剪贴板监听：识别到 token 会先验证再保存",
-                            crate::clipboard::WATCH_SECONDS
-                        ),
-                    );
-                }
+                let ctx = ui.ctx().clone();
+                self.copy_token_cmd(&ctx, false);
             }
             if let Some(t) = self.copied_at {
-                if t.elapsed().as_secs_f32() < 2.5 {
-                    let hint = if clip_watch_on {
+                let show_for = if self.copied_auto { 5.0 } else { 2.5 };
+                if t.elapsed().as_secs_f32() < show_for {
+                    let hint = if self.copied_auto {
+                        "已自动复制命令：到浏览器 F12 控制台粘贴回车，再把结果复制回来"
+                    } else if clip_watch_on {
                         "已复制，粘贴到浏览器控制台回车，结果复制回来即可"
                     } else {
                         "已复制，粘贴到浏览器控制台回车（可在设置里开启剪贴板自动识别）"
