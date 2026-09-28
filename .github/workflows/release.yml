@@ -1,6 +1,7 @@
 name: Release
 
 # 版本驱动发布：Cargo.toml 的 version 改了且对应 tag 不存在 → 自动打 tag、构建、发 Release
+# Release Notes 由 git-cliff 从 Conventional Commits 生成（规则见 cliff.toml）
 # 触发：推送 main 且 Cargo.toml 有改动，或 Actions 页面手动触发（workflow_dispatch）
 on:
   push:
@@ -48,6 +49,17 @@ jobs:
           git tag -a "v${{ steps.version.outputs.version }}" -m "v${{ steps.version.outputs.version }}"
           git push origin "v${{ steps.version.outputs.version }}"
 
+      - name: 安装 git-cliff
+        if: steps.version.outputs.skip != 'true'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: git-cliff
+
+      - name: 生成 Release Notes
+        if: steps.version.outputs.skip != 'true'
+        shell: bash
+        run: git-cliff --config cliff.toml --latest --strip header > RELEASE_NOTES.md
+
       - name: 安装 Rust 工具链
         if: steps.version.outputs.skip != 'true'
         uses: dtolnay/rust-toolchain@stable
@@ -75,4 +87,4 @@ jobs:
           gh release create "v${{ steps.version.outputs.version }}" \
             "target/release/leigod-pause.exe" \
             --title "v${{ steps.version.outputs.version }}" \
-            --generate-notes
+            --notes-file RELEASE_NOTES.md

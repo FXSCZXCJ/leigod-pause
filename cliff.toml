@@ -1,0 +1,44 @@
+# git-cliff 配置：Release Notes 生成规则
+# 用法：git-cliff --config cliff.toml --latest --strip header > RELEASE_NOTES.md
+# 分组依据 Conventional Commits（feat/fix/perf/refactor/docs/test/build/ci/chore）
+
+[changelog]
+# 完整 CHANGELOG 输出时的标题（--strip header 会在 Release Notes 场景剥掉它）
+header = """# 更新日志\n"""
+
+body = """
+{% if version %}\
+## {{ version }}（{{ timestamp | date(format="%Y-%m-%d") }}）
+{% else %}\
+## 未发布
+{% endif %}\
+{% for group, commits in commits | group_by(attribute="group") %}\
+\n### {{ group | upper_first }}\n
+{% for commit in commits %}\
+- {% if commit.breaking %}**⚠️ 不兼容变更：** {% endif %}{% if commit.scope %}**{{ commit.scope }}：** {% endif %}{{ commit.message | upper_first }}（{{ commit.id | truncate(length=7, end="") }}）
+{% endfor %}\
+{% endfor %}\
+"""
+trim = true
+
+[git]
+conventional_commits = true
+filter_unconventional = true   # 非规范提交（如 init）不进日志
+split_commits = false
+tag_pattern = "v[0-9].*"
+
+commit_parsers = [
+    { message = "^feat", group = "✨ 新功能" },
+    { message = "^fix", group = "🐛 问题修复" },
+    { message = "^perf", group = "⚡ 性能优化" },
+    { message = "^refactor", group = "♻️ 重构" },
+    { message = "^docs", group = "📝 文档" },
+    { message = "^test", group = "🧪 测试" },
+    { message = "^build", group = "📦 构建" },
+    { message = "^ci", group = "🧰 CI / 工程化" },
+    { message = "^chore\\(release\\)", skip = true },   # 版本号 bump 是发布动作本身，不进日志
+    { message = "^chore", group = "🔧 杂项" },
+    { message = ".*", group = "🔧 其他" },
+]
+
+protect_breaking_commits = true   # 带 ! 或 BREAKING CHANGE 的提交即使被 skip 规则命中也强制保留
