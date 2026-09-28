@@ -22,6 +22,10 @@ enum Page {
     Logs,
 }
 
+/// 浏览器控制台里取 account_token 的命令（登录页「复制命令」按钮用）
+const TOKEN_CONSOLE_CMD: &str =
+    r#"JSON.parse(localStorage.getItem("account_token")).account_token"#;
+
 /// 语义色：egui 内置的 LIGHT_BLUE / LIGHT_GREEN 在浅色主题的白底上太淡，
 /// 这里按当前主题（深/浅）各给一套，保证两边都看得清。
 mod tone {
@@ -101,6 +105,8 @@ pub struct App {
     token_paste: String,
     login_msg: Arc<Mutex<String>>,
     login_busy: Arc<std::sync::atomic::AtomicBool>,
+    /// 最近一次「复制命令」的时间（用于短暂显示已复制提示）
+    copied_at: Option<std::time::Instant>,
 }
 
 impl App {
@@ -176,6 +182,7 @@ impl App {
             token_paste: String::new(),
             login_msg: Arc::new(Mutex::new(String::new())),
             login_busy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            copied_at: None,
         };
         app.tray = tray::build(&app.state.monitor.lock().unwrap().tooltip_text()).ok();
         // 捕获原生窗口句柄，供原生 ShowWindow 使用
@@ -770,7 +777,21 @@ impl App {
         ui.separator();
         ui.heading("手动填入 token");
         ui.small("浏览器登录 www.leigod.com 后，F12 Console 执行：");
-        ui.monospace(r#"JSON.parse(localStorage.getItem("account_token")).account_token"#);
+        ui.add(
+            egui::Label::new(egui::RichText::new(TOKEN_CONSOLE_CMD).monospace())
+                .selectable(true),
+        );
+        ui.horizontal(|ui| {
+            if ui.button("📋 复制命令").clicked() {
+                ui.ctx().copy_text(TOKEN_CONSOLE_CMD.to_string());
+                self.copied_at = Some(std::time::Instant::now());
+            }
+            if let Some(t) = self.copied_at {
+                if t.elapsed().as_secs_f32() < 2.5 {
+                    ui.colored_label(tone::ok(ui), "已复制，粘贴到浏览器控制台回车");
+                }
+            }
+        });
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             ui.add(
