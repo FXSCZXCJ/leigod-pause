@@ -28,11 +28,12 @@ pub enum MonitorStatus {
 
 impl MonitorStatus {
     pub fn tooltip_text(&self) -> String {
+        const APP: &str = concat!("雷神自动暂停 v", env!("CARGO_PKG_VERSION"));
         match self {
-            MonitorStatus::Idle => "雷神自动暂停：监控中".into(),
-            MonitorStatus::InGame(name) => format!("雷神自动暂停：检测到 {name}"),
-            MonitorStatus::Grace(left) => format!("雷神自动暂停：{left} 秒后暂停"),
-            MonitorStatus::PendingPause => "雷神自动暂停：token失效，等待更新".into(),
+            MonitorStatus::Idle => format!("{APP}：监控中"),
+            MonitorStatus::InGame(name) => format!("{APP}：检测到 {name}"),
+            MonitorStatus::Grace(left) => format!("{APP}：{left} 秒后暂停"),
+            MonitorStatus::PendingPause => format!("{APP}：token失效，等待更新"),
         }
     }
 

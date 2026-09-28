@@ -152,7 +152,10 @@ fn ensure_console_window() {
     };
     unsafe {
         if AllocConsole().is_ok() {
-            let _ = SetConsoleTitleW(windows::core::w!("雷神自动暂停 控制台"));
+            let _ = SetConsoleTitleW(&windows::core::HSTRING::from(format!(
+                "雷神自动暂停 v{} 控制台",
+                env!("CARGO_PKG_VERSION")
+            )));
             rebind_std(STD_OUTPUT_HANDLE, "CONOUT$");
             rebind_std(STD_ERROR_HANDLE, "CONOUT$");
         }
@@ -400,7 +403,9 @@ fn run_gui(
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title(format!("雷神自动暂停 v{}", env!("CARGO_PKG_VERSION")))
             .with_inner_size([440.0, 520.0])
-            .with_icon(window_icon()),
+            .with_icon(window_icon())
+            // 创建时就定好可见性：若等到 App::new 里再隐藏，窗口会先显示一帧造成闪窗
+            .with_visible(start_visible),
         ..Default::default()
     };
 
