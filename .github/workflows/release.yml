@@ -1,0 +1,78 @@
+name: Release
+
+# 版本驱动发布：Cargo.toml 的 version 改了且对应 tag 不存在 → 自动打 tag、构建、发 Release
+# 触发：推送 main 且 Cargo.toml 有改动，或 Actions 页面手动触发（workflow_dispatch）
+on:
+  push:
+    branches: [main]
+    paths: ['Cargo.toml']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # 需要完整历史以检查远程 tag 是否已存在
+
+      - name: 读取版本号并检查 tag
+        id: version
+        shell: bash
+        run: |
+          VERSION=$(grep -m1 '^version' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Cargo.toml 版本: v$VERSION"
+          if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+            echo "tag v$VERSION 已存在，无需发布"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag v$VERSION 不存在，开始发布流程"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 创建 tag（github-actions[bot]）
+        if: steps.version.outputs.skip != 'true'
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "v${{ steps.version.outputs.version }}" -m "v${{ steps.version.outputs.version }}"
+          git push origin "v${{ steps.version.outputs.version }}"
+
+      - name: 安装 Rust 工具链
+        if: steps.version.outputs.skip != 'true'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存 cargo
+        if: steps.version.outputs.skip != 'true'
+        uses: Swatinem/rust-cache@v2
+
+      - name: 测试
+        if: steps.version.outputs.skip != 'true'
+        shell: bash
+        run: cargo test --release
+
+      - name: 构建
+        if: steps.version.outputs.skip != 'true'
+        shell: bash
+        run: cargo build --release
+
+      - name: 发布 Release
+        if: steps.version.outputs.skip != 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v${{ steps.version.outputs.version }}" \
+            "target/release/leigod-pause.exe" \
+            --title "v${{ steps.version.outputs.version }}" \
+            --generate-notes
