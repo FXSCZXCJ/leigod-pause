@@ -58,6 +58,8 @@ jobs:
       - name: 生成 Release Notes
         if: steps.version.outputs.skip != 'true'
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}   # 解析提交者 GitHub 用户名（cliff.toml [remote.github]）
         run: git-cliff --config cliff.toml --latest --strip header > RELEASE_NOTES.md
 
       - name: 安装 Rust 工具链

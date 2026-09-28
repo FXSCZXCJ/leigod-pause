@@ -15,7 +15,7 @@ body = """
 {% for group, commits in commits | group_by(attribute="group") %}\
 \n### {{ group | upper_first }}\n
 {% for commit in commits %}\
-- {% if commit.breaking %}**⚠️ 不兼容变更：** {% endif %}{% if commit.scope %}**{{ commit.scope }}：** {% endif %}{{ commit.message | upper_first }}（[{{ commit.id | truncate(length=7, end="") }}](https://github.com/FXSCZXCJ/leigod-pause/commit/{{ commit.id }})）
+- {% if commit.breaking %}**⚠️ 不兼容变更：** {% endif %}{% if commit.scope %}**{{ commit.scope }}：** {% endif %}{{ commit.message | upper_first }}（[{{ commit.id | truncate(length=7, end="") }}](https://github.com/FXSCZXCJ/leigod-pause/commit/{{ commit.id }}){% if commit.remote.username %}，[@{{ commit.remote.username }}](https://github.com/{{ commit.remote.username }}){% else %}，{{ commit.author.name }}{% endif %}）
 {% endfor %}\
 {% endfor %}\
 {% if version and previous.version %}\
@@ -45,3 +45,7 @@ commit_parsers = [
 ]
 
 protect_breaking_commits = true   # 带 ! 或 BREAKING CHANGE 的提交即使被 skip 规则命中也强制保留
+
+[remote.github]
+owner = "FXSCZXCJ"
+repo = "leigod-pause"
