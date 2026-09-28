@@ -106,9 +106,11 @@ cargo build --release # 发布单 exe（内嵌图标）
 
 | 项目 | 语言 | 参考了什么 |
 |---|---|---|
-| [6yy66yy/legod-auto-pause](https://github.com/6yy66yy/legod-auto-pause) | Python | **本项目的起点**：`config.ini` 字段与格式、托盘交互流程、游戏进程名匹配方式、关机暂停思路 |
+| [6yy66yy/legod-auto-pause](https://github.com/6yy66yy/legod-auto-pause) | Python | **本项目的起点**：`config.ini` 字段与格式、托盘交互流程、游戏进程名匹配方式 |
 | [hobk/leishen-auto](https://github.com/hobk/leishen-auto) | Go | 验证了"用 `account_token` 直连接口"这条路线可行（本项目同样是 token 方案） |
 | [leigod.com](https://www.leigod.com) | — | 接口行为与错误码的实测对象（官网前端所用的 HTTP 接口，非公开 API） |
+
+> **注（功能归属）**：「关机强制暂停」（钩住 `WM_QUERYENDSESSION` / `WM_ENDSESSION`，关机前抢着把时长暂停）**不是上游 Python 项目的功能**，而是**维护者自己在 Python 版上改造加的**（上游 `TrayIcon.py` 未处理任何关机消息，已核实）；Rust 版沿用并加强了它（2 秒超时 × 2 次重试、失败也允许关机继续）。
 
 ## 编写者说明
 
