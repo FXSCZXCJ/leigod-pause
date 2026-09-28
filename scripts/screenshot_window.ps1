@@ -20,6 +20,7 @@ public class WinShot {
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT r);
   [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr hWnd, IntPtr hdcBlt, uint flags);
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
+  [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr hWnd, int attr, out RECT rect, int size);
 
   public static IntPtr MainWindow(uint targetPid) {
     IntPtr found = IntPtr.Zero;
@@ -59,10 +60,32 @@ $g = [System.Drawing.Graphics]::FromImage($bmp)
 $hdc = $g.GetHdc()
 $ok = [WinShot]::PrintWindow($hwnd, $hdc, 2)   # 2 = PW_RENDERFULLCONTENT
 $g.ReleaseHdc($hdc)
-$bmp.Save($Out, [System.Drawing.Imaging.ImageFormat]::Png)
-$g.Dispose(); $bmp.Dispose()
+$g.Dispose()
+
+# GetWindowRect 含 Win11 的"不可见调整边框"（左右各约 8px、底部约 8px），
+# 那部分不会被绘制，直接保存会出现黑边 -> 按 DWM 可见边界裁剪
+$fr = New-Object WinShot+RECT
+$dwm = [WinShot]::DwmGetWindowAttribute($hwnd, 9, [ref]$fr, [System.Runtime.InteropServices.Marshal]::SizeOf($fr))
+$final = $bmp
+if ($dwm -eq 0) {
+    $cx = $fr.Left - $r.Left
+    $cy = $fr.Top - $r.Top
+    $cw = $fr.Right - $fr.Left
+    $ch = $fr.Bottom - $fr.Top
+    if ($cw -gt 0 -and $ch -gt 0 -and $cx -ge 0 -and $cy -ge 0 -and ($cx + $cw) -le $w -and ($cy + $ch) -le $h) {
+        $crop = New-Object System.Drawing.Rectangle $cx, $cy, $cw, $ch
+        $final = $bmp.Clone($crop, $bmp.PixelFormat)
+        Write-Output "cropped to visible frame: offset=($cx,$cy) size=${cw}x${ch}"
+    }
+}
+
+$finalW = $final.Width
+$finalH = $final.Height
+$final.Save($Out, [System.Drawing.Imaging.ImageFormat]::Png)
+$final.Dispose()
+$bmp.Dispose()
 if ($ok) {
-    Write-Output "saved: $Out (${w}x${h})"
+    Write-Output "saved: $Out (${finalW}x${finalH})"
 } else {
     Write-Output "PrintWindow failed; saved (possibly blank): $Out"
 }
