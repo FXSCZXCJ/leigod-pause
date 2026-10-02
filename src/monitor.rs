@@ -152,6 +152,9 @@ pub fn run(state: Arc<AppState>, cfg: Arc<SharedConfig>, rx: Receiver<MonCmd>) {
                         if let Ok((true, msg)) = actions::do_recover(&state) {
                             state.push_notify("自动恢复加速", &msg);
                         }
+                    } else {
+                        // 状态变化：自动查询一次账号状态，状态页所见即所得
+                        let _ = actions::query_info(&state);
                     }
                 }
                 if !matches!(mode, Mode::InGame(_)) && prev != "ingame" && matches!(mode, Mode::Grace { .. }) {
@@ -172,6 +175,8 @@ pub fn run(state: Arc<AppState>, cfg: Arc<SharedConfig>, rx: Receiver<MonCmd>) {
                         &state,
                         &format!("游戏已退出，{} 秒后自动暂停", g),
                     );
+                    // 状态变化：自动查询一次账号状态（暂停完成后 do_pause 内部也会查）
+                    let _ = actions::query_info(&state);
                 }
                 Mode::Grace { deadline } => {
                     let left = deadline.saturating_duration_since(Instant::now()).as_secs();
