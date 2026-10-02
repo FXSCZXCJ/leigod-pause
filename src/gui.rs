@@ -199,7 +199,7 @@ impl App {
             login_auto_copied: false,
             clip_deadline: Arc::new(Mutex::new(None)),
         };
-        app.tray = tray::build(&app.state.monitor.lock().unwrap().tooltip_text()).ok();
+        app.tray = tray::build(&app.state.monitor.lock().unwrap_or_else(|e| e.into_inner()).tooltip_text()).ok();
         // 捕获原生窗口句柄，供原生 ShowWindow 使用
         app.native_hwnd = (|| {
             use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -243,9 +243,9 @@ impl App {
         ctx.copy_text(TOKEN_CONSOLE_CMD.to_string());
         self.copied_at = Some(std::time::Instant::now());
         self.copied_auto = auto;
-        let watch_on = self.clip_watch || self.cfg.read().unwrap().clip_watch;
+        let watch_on = self.clip_watch || self.cfg.read().unwrap_or_else(|e| e.into_inner()).clip_watch;
         if watch_on {
-            *self.clip_deadline.lock().unwrap() = Some(
+            *self.clip_deadline.lock().unwrap_or_else(|e| e.into_inner()) = Some(
                 std::time::Instant::now()
                     + std::time::Duration::from_secs(crate::clipboard::WATCH_SECONDS),
             );
@@ -274,7 +274,7 @@ impl App {
     }
 
     fn load_settings_buf(&mut self) {
-        let cfg = self.cfg.read().unwrap().clone();
+        let cfg = self.cfg.read().unwrap_or_else(|e| e.into_inner()).clone();
         self.game_rules = cfg.games.clone();
         self.blacklist_rules = cfg.blacklist.clone();
         self.grace = cfg.grace;
@@ -290,7 +290,7 @@ impl App {
 
     fn save_settings(&mut self) {
         {
-            let mut cfg = self.cfg.write().unwrap();
+            let mut cfg = self.cfg.write().unwrap_or_else(|e| e.into_inner());
             cfg.games = self
                 .game_rules
                 .iter()
@@ -341,14 +341,14 @@ impl App {
             return;
         }
         self.login_busy.store(true, Ordering::SeqCst);
-        self.login_msg.lock().unwrap().clear();
+        self.login_msg.lock().unwrap_or_else(|e| e.into_inner()).clear();
         let state = self.state.clone();
         let ctx = self.ctx.clone();
         let msg_slot = self.login_msg.clone();
         let busy = self.login_busy.clone();
         let mut phone = self.phone.trim().to_string();
         if phone.is_empty() {
-            phone = self.cfg.read().unwrap().uname.clone();
+            phone = self.cfg.read().unwrap_or_else(|e| e.into_inner()).uname.clone();
         }
         self.phone = phone.clone();
         std::thread::spawn(move || {
@@ -356,7 +356,7 @@ impl App {
                 Ok(info) => format!("验证码已发送，标识有效期至 {}", info.expiry),
                 Err(e) => format!("发送失败：{e}"),
             };
-            *msg_slot.lock().unwrap() = msg.clone();
+            *msg_slot.lock().unwrap_or_else(|e| e.into_inner()) = msg.clone();
             log(&state, &msg);
             busy.store(false, Ordering::SeqCst);
             ctx.request_repaint();
@@ -369,11 +369,11 @@ impl App {
         }
         let code = self.sms_code.trim().to_string();
         if code.is_empty() {
-            *self.login_msg.lock().unwrap() = "请先输入验证码".into();
+            *self.login_msg.lock().unwrap_or_else(|e| e.into_inner()) = "请先输入验证码".into();
             return;
         }
         self.login_busy.store(true, Ordering::SeqCst);
-        self.login_msg.lock().unwrap().clear();
+        self.login_msg.lock().unwrap_or_else(|e| e.into_inner()).clear();
         self.sms_code.clear();
         let state = self.state.clone();
         let ctx = self.ctx.clone();
@@ -384,7 +384,7 @@ impl App {
                 Ok(_) => "登录成功，token 已更新并写入 config.ini".to_string(),
                 Err(e) => format!("登录失败：{e}"),
             };
-            *msg_slot.lock().unwrap() = msg.clone();
+            *msg_slot.lock().unwrap_or_else(|e| e.into_inner()) = msg.clone();
             log(&state, &msg);
             busy.store(false, Ordering::SeqCst);
             ctx.request_repaint();
@@ -402,7 +402,7 @@ impl eframe::App for App {
         // 托盘菜单/点击/系统通知由独立线程处理（窗口隐藏时本循环会停摆，见 state.rs 注释）
 
         // ---- tooltip 同步 ----
-        let tip = self.state.monitor.lock().unwrap().tooltip_text();
+        let tip = self.state.monitor.lock().unwrap_or_else(|e| e.into_inner()).tooltip_text();
         if tip != self.tooltip_cache {
             if let Some(t) = &self.tray {
                 let _ = t.set_tooltip(Some(&tip));
@@ -432,7 +432,7 @@ impl eframe::App for App {
             self.login_auto_copied = false;
         }
         if self.phone.is_empty() {
-            self.phone = self.cfg.read().unwrap().uname.clone();
+            self.phone = self.cfg.read().unwrap_or_else(|e| e.into_inner()).uname.clone();
         }
 
         egui::TopBottomPanel::top("tabs").show(ctx, |ui| {
@@ -454,21 +454,22 @@ impl eframe::App for App {
             Page::Logs => self.ui_logs(ui),
         });
 
-        ctx.request_repaint_after(Duration::from_millis(400));
+        // 秒级倒计时/tooltip 1 秒刷一次足够，降低常驻 CPU/GPU 开销
+        ctx.request_repaint_after(Duration::from_secs(1));
     }
 }
 
 impl App {
     fn ui_status(&mut self, ui: &mut egui::Ui) {
         let token_valid = self.state.token_valid.load(Ordering::SeqCst);
-        let pause_status = *self.state.pause_status.lock().unwrap();
-        let monitor = self.state.monitor.lock().unwrap().clone();
+        let pause_status = *self.state.pause_status.lock().unwrap_or_else(|e| e.into_inner());
+        let monitor = self.state.monitor.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let grace = self.state.grace_remaining.load(Ordering::SeqCst);
         let pending = self.state.pending_pause.load(Ordering::SeqCst);
-        let last_api = self.state.last_api_result.lock().unwrap().clone();
+        let last_api = self.state.last_api_result.lock().unwrap_or_else(|e| e.into_inner()).clone();
 
         if pending {
-            let reason = self.state.pending_reason.lock().unwrap().clone();
+            let reason = self.state.pending_reason.lock().unwrap_or_else(|e| e.into_inner()).clone();
             ui.colored_label(
                 tone::warn(ui),
                 format!("⚠ 暂停请求挂起：{reason}。更新 token 后将自动重试。"),
@@ -569,7 +570,7 @@ impl App {
         let state = self.state.clone();
         std::thread::spawn(move || {
             let games = crate::steam::installed_games();
-            *games_slot.lock().unwrap() = games;
+            *games_slot.lock().unwrap_or_else(|e| e.into_inner()) = games;
             scanned.store(true, Ordering::SeqCst);
             scanning.store(false, Ordering::SeqCst);
             ctx.request_repaint();
@@ -617,7 +618,7 @@ impl App {
             }
             rows.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
             rows.truncate(400);
-            *list_slot.lock().unwrap() = rows;
+            *list_slot.lock().unwrap_or_else(|e| e.into_inner()) = rows;
             scanned.store(true, Ordering::SeqCst);
             scanning.store(false, Ordering::SeqCst);
             ctx.request_repaint();
@@ -697,7 +698,7 @@ impl App {
                 }
             });
             if self.steam_scanned.load(Ordering::SeqCst) {
-                let games = self.steam_games.lock().unwrap().clone();
+                let games = self.steam_games.lock().unwrap_or_else(|e| e.into_inner()).clone();
                 if games.is_empty() {
                     ui.small("未找到 Steam 安装或已安装的游戏。");
                 } else {
@@ -739,7 +740,7 @@ impl App {
                 }
             });
             if self.proc_scanned.load(Ordering::SeqCst) {
-                let rows = self.proc_list.lock().unwrap().clone();
+                let rows = self.proc_list.lock().unwrap_or_else(|e| e.into_inner()).clone();
                 egui::ScrollArea::vertical()
                     .id_salt("proc_list")
                     .max_height(180.0)
@@ -897,7 +898,7 @@ impl App {
             }
         });
 
-        let msg = self.login_msg.lock().unwrap().clone();
+        let msg = self.login_msg.lock().unwrap_or_else(|e| e.into_inner()).clone();
         if !msg.is_empty() {
             // 失败信息里带「失败/出错」等字样时用警示色，其余按成功色
             let color = if msg.contains("失败") || msg.contains("出错") || msg.contains("请先") {
@@ -909,7 +910,7 @@ impl App {
         }
 
         let key = self.state.smscode_key();
-        let expiry = self.state.sms_expiry.lock().unwrap().clone();
+        let expiry = self.state.sms_expiry.lock().unwrap_or_else(|e| e.into_inner()).clone();
         if !key.is_empty() {
             ui.small(format!("当前验证码标识有效期至：{expiry}"));
         }
@@ -922,7 +923,7 @@ impl App {
                 .selectable(true),
         );
         ui.horizontal(|ui| {
-            let clip_watch_on = self.clip_watch || self.cfg.read().unwrap().clip_watch;
+            let clip_watch_on = self.clip_watch || self.cfg.read().unwrap_or_else(|e| e.into_inner()).clip_watch;
             if ui.button("📋 复制命令").clicked() {
                 let ctx = ui.ctx().clone();
                 self.copy_token_cmd(&ctx, false);
@@ -943,7 +944,7 @@ impl App {
         });
         // 监听中：显示剩余秒数（到期由 GUI 线程清掉标记）
         {
-            let mut dl = self.clip_deadline.lock().unwrap();
+            let mut dl = self.clip_deadline.lock().unwrap_or_else(|e| e.into_inner());
             match *dl {
                 Some(d) if d > std::time::Instant::now() => {
                     let left = d
@@ -969,9 +970,9 @@ impl App {
                 match actions::apply_token(&self.state, &self.token_paste.clone()) {
                     Ok(()) => {
                         self.token_paste.clear();
-                        *self.login_msg.lock().unwrap() = "token 已保存".into();
+                        *self.login_msg.lock().unwrap_or_else(|e| e.into_inner()) = "token 已保存".into();
                     }
-                    Err(e) => *self.login_msg.lock().unwrap() = e,
+                    Err(e) => *self.login_msg.lock().unwrap_or_else(|e| e.into_inner()) = e,
                 }
             }
         });
@@ -980,13 +981,13 @@ impl App {
     fn ui_logs(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             if ui.button("清空显示").clicked() {
-                self.state.log_buf.lock().unwrap().clear();
+                self.state.log_buf.lock().unwrap_or_else(|e| e.into_inner()).clear();
             }
         });
         egui::ScrollArea::vertical()
             .stick_to_bottom(true)
             .show(ui, |ui| {
-                let buf = self.state.log_buf.lock().unwrap();
+                let buf = self.state.log_buf.lock().unwrap_or_else(|e| e.into_inner());
                 let mut text = String::new();
                 for line in buf.iter() {
                     let _ = writeln!(text, "{line}");

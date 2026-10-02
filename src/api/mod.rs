@@ -80,6 +80,20 @@ impl LeigodClient {
         }
     }
 
+    /// 进程级共享客户端：reqwest blocking 每个实例都要建 TLS 栈和运行时线程，
+    /// 每次调用现建一个开销很大（还会让线程数膨胀），按超时秒数缓存复用。
+    pub fn shared(timeout: Duration) -> std::sync::Arc<Self> {
+        use std::collections::HashMap;
+        use std::sync::{Arc, Mutex, OnceLock};
+        static SHARED: OnceLock<Mutex<HashMap<u64, Arc<LeigodClient>>>> = OnceLock::new();
+        let key = timeout.as_secs();
+        let map = SHARED.get_or_init(|| Mutex::new(HashMap::new()));
+        let mut map = map.lock().unwrap_or_else(|e| e.into_inner());
+        map.entry(key)
+            .or_insert_with(|| Arc::new(Self::new(timeout)))
+            .clone()
+    }
+
     fn common_query() -> &'static str {
         "?os_type=4&region_code=1&src_channel=guanwang&lang=zh_CN"
     }

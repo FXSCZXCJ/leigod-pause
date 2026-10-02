@@ -8,8 +8,8 @@ use crate::api::{AccountInfo, ApiError, LeigodClient, SmsInfo};
 use crate::config::Config;
 use crate::state::{log, AppState};
 
-fn client(timeout: Duration) -> LeigodClient {
-    LeigodClient::new(timeout)
+fn client(timeout: Duration) -> std::sync::Arc<LeigodClient> {
+    LeigodClient::shared(timeout)
 }
 
 fn reload_config(state: &AppState) -> Config {
@@ -30,7 +30,7 @@ pub fn query_info(state: &AppState) -> Result<AccountInfo, ApiError> {
     match c.info(&token) {
         Ok(info) => {
             state.token_valid.store(true, Ordering::SeqCst);
-            *state.pause_status.lock().unwrap() = info.pause_status_id;
+            *state.pause_status.lock().unwrap_or_else(|e| e.into_inner()) = info.pause_status_id;
             let txt = format!(
                 "查询成功：{}",
                 match info.pause_status_id {
@@ -61,7 +61,7 @@ pub fn do_pause(state: &AppState) -> Result<(bool, String), ApiError> {
     if token.is_empty() {
         let msg = "未配置 token，无法暂停";
         state.pending_pause.store(true, Ordering::SeqCst);
-        *state.pending_reason.lock().unwrap() = "未配置 token".into();
+        *state.pending_reason.lock().unwrap_or_else(|e| e.into_inner()) = "未配置 token".into();
         log(state, msg);
         return Err(ApiError::Api {
             code: -1,
@@ -73,7 +73,7 @@ pub fn do_pause(state: &AppState) -> Result<(bool, String), ApiError> {
     match query_info(state) {
         Ok(info) if info.pause_status_id == Some(1) => {
             state.pending_pause.store(false, Ordering::SeqCst);
-            *state.pause_status.lock().unwrap() = Some(1);
+            *state.pause_status.lock().unwrap_or_else(|e| e.into_inner()) = Some(1);
             state.set_api_result("查询确认：已处于暂停状态，无需重复暂停");
             log(state, "暂停跳过：账号已处于暂停状态");
             return Ok((false, "已处于暂停状态".into()));
@@ -87,7 +87,7 @@ pub fn do_pause(state: &AppState) -> Result<(bool, String), ApiError> {
         Ok(msg) => {
             state.pending_pause.store(false, Ordering::SeqCst);
             state.token_valid.store(true, Ordering::SeqCst);
-            *state.pause_status.lock().unwrap() = Some(1);
+            *state.pause_status.lock().unwrap_or_else(|e| e.into_inner()) = Some(1);
             state.set_api_result(&msg);
             log(state, &format!("暂停计时：{msg}"));
             Ok((true, msg))
@@ -97,7 +97,7 @@ pub fn do_pause(state: &AppState) -> Result<(bool, String), ApiError> {
                 state.token_valid.store(false, Ordering::SeqCst);
             }
             state.pending_pause.store(true, Ordering::SeqCst);
-            *state.pending_reason.lock().unwrap() = format!("{e}");
+            *state.pending_reason.lock().unwrap_or_else(|e| e.into_inner()) = format!("{e}");
             state.set_api_result(&format!("暂停失败：{e}"));
             log(state, &format!("暂停计时失败: {e}"));
             Err(e)
@@ -118,7 +118,7 @@ pub fn do_recover(state: &AppState) -> Result<(bool, String), ApiError> {
     // 关键节点：先读暂停状态
     match query_info(state) {
         Ok(info) if info.pause_status_id == Some(0) => {
-            *state.pause_status.lock().unwrap() = Some(0);
+            *state.pause_status.lock().unwrap_or_else(|e| e.into_inner()) = Some(0);
             state.set_api_result("查询确认：已在加速中，无需重复恢复");
             log(state, "恢复跳过：账号已在加速中");
             return Ok((false, "已在加速中".into()));
@@ -131,7 +131,7 @@ pub fn do_recover(state: &AppState) -> Result<(bool, String), ApiError> {
     match c.recover(&token) {
         Ok(msg) => {
             state.token_valid.store(true, Ordering::SeqCst);
-            *state.pause_status.lock().unwrap() = Some(0);
+            *state.pause_status.lock().unwrap_or_else(|e| e.into_inner()) = Some(0);
             state.set_api_result(&msg);
             log(state, &format!("恢复计时：{msg}"));
             Ok((true, msg))
@@ -175,8 +175,8 @@ pub fn trigger_sms(state: &AppState, phone_override: Option<&str>) -> Result<Sms
     if let Err(e) = cfg.save(&state.config_path) {
         log(state, &format!("smscode_key 写入配置失败: {e}"));
     }
-    *state.smscode_key.lock().unwrap() = info.smscode_key.clone();
-    *state.sms_expiry.lock().unwrap() = info.expiry.clone();
+    *state.smscode_key.lock().unwrap_or_else(|e| e.into_inner()) = info.smscode_key.clone();
+    *state.sms_expiry.lock().unwrap_or_else(|e| e.into_inner()) = info.expiry.clone();
     log(
         state,
         &format!("验证码已下发至 {}，标识有效期至 {}", mask_phone(&cfg.uname), info.expiry),
