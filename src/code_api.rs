@@ -105,7 +105,7 @@ fn status_payload(state: &Arc<AppState>) -> serde_json::Value {
         Ok(info) => (true, info.pause_status_id, serde_json::Value::Null),
         Err(e) => (
             false,
-            *state.pause_status.lock().unwrap(),
+            *state.pause_status.lock().unwrap_or_else(|e| e.into_inner()),
             json!(format!("{e}")),
         ),
     };
@@ -113,11 +113,11 @@ fn status_payload(state: &Arc<AppState>) -> serde_json::Value {
         "token_valid": valid,
         "pause_status_id": pause_status,
         "info_error": info_err,
-        "monitor": state.monitor.lock().unwrap().gui_text(),
+        "monitor": state.monitor.lock().unwrap_or_else(|e| e.into_inner()).gui_text(),
         "grace_remaining": state.grace_remaining.load(std::sync::atomic::Ordering::SeqCst),
         "pending_pause": state.pending_pause.load(std::sync::atomic::Ordering::SeqCst),
         "smscode_key_present": !state.smscode_key().is_empty(),
-        "sms_expiry": state.sms_expiry.lock().unwrap().clone(),
+        "sms_expiry": state.sms_expiry.lock().unwrap_or_else(|e| e.into_inner()).clone(),
     })
 }
 

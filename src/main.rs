@@ -36,6 +36,13 @@ use config::Config;
 use state::{log, AppState};
 
 fn main() {
+    // 全局 panic 钩子：任何线程崩溃都落进 leigod_rs.log，避免「未响应」悬案无从排查
+    std::panic::set_hook(Box::new(|info| {
+        let msg = format!("线程崩溃: {info}");
+        eprintln!("{msg}");
+        append_log(&config::default_config_path(), &msg);
+    }));
+
     // GUI 子系统程序没有控制台：先接上父控制台（终端里启动）或把输出指到 NUL
     let stdio_state = init_stdio();
 
@@ -369,7 +376,7 @@ fn run_gui(
     }
     {
         let (ntx, nrx) = mpsc::channel::<(String, String)>();
-        *state.notify_tx.lock().unwrap() = Some(ntx);
+        *state.notify_tx.lock().unwrap_or_else(|e| e.into_inner()) = Some(ntx);
         let aumid = events::init_toast_identity();
         events::start_notify(state.clone(), nrx, aumid);
     }

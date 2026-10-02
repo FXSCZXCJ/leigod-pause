@@ -105,34 +105,34 @@ impl AppState {
     }
 
     pub fn token(&self) -> String {
-        self.token.lock().unwrap().clone()
+        self.token.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// 写入新 token 并递增版本号
     pub fn set_token(&self, token: String) {
-        *self.token.lock().unwrap() = token;
+        *self.token.lock().unwrap_or_else(|e| e.into_inner()) = token;
         self.token_version.fetch_add(1, Ordering::SeqCst);
         self.token_valid.store(true, Ordering::SeqCst);
     }
 
     pub fn smscode_key(&self) -> String {
-        self.smscode_key.lock().unwrap().clone()
+        self.smscode_key.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// GUI 初始化后注入显示能力
     pub fn set_gui_handles(&self, ctx: egui::Context, native_hwnd: Option<isize>) {
-        *self.gui_ctx.lock().unwrap() = Some(ctx);
-        *self.native_hwnd.lock().unwrap() = native_hwnd;
+        *self.gui_ctx.lock().unwrap_or_else(|e| e.into_inner()) = Some(ctx);
+        *self.native_hwnd.lock().unwrap_or_else(|e| e.into_inner()) = native_hwnd;
     }
 
     /// 显示主窗口：原生 ShowWindow（唤醒 egui 循环）+ egui Focus 命令
     pub fn native_show_window(&self) {
-        if let Some(ctx) = self.gui_ctx.lock().unwrap().clone() {
+        if let Some(ctx) = self.gui_ctx.lock().unwrap_or_else(|e| e.into_inner()).clone() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
             ctx.request_repaint();
         }
-        if let Some(h) = *self.native_hwnd.lock().unwrap() {
+        if let Some(h) = *self.native_hwnd.lock().unwrap_or_else(|e| e.into_inner()) {
             use windows::Win32::Foundation::HWND;
             use windows::Win32::UI::WindowsAndMessaging::{
                 SetForegroundWindow, ShowWindow, SW_SHOW,
@@ -148,13 +148,13 @@ impl AppState {
 
     /// 弹出系统通知（由 notify 线程实际执行，任何线程可调用）
     pub fn push_notify(&self, title: &str, body: &str) {
-        if let Some(tx) = self.notify_tx.lock().unwrap().as_ref() {
+        if let Some(tx) = self.notify_tx.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
             let _ = tx.send((title.to_string(), body.to_string()));
         }
     }
 
     pub fn set_api_result(&self, text: &str) {
-        *self.last_api_result.lock().unwrap() = text.to_string();
+        *self.last_api_result.lock().unwrap_or_else(|e| e.into_inner()) = text.to_string();
     }
 }
 
@@ -166,7 +166,7 @@ pub fn log(state: &AppState, msg: &str) {
         use std::io::Write;
         let _ = writeln!(std::io::stdout(), "{}", line);
     }
-    let mut buf = state.log_buf.lock().unwrap();
+    let mut buf = state.log_buf.lock().unwrap_or_else(|e| e.into_inner());
     if buf.len() >= 500 {
         buf.pop_front();
     }

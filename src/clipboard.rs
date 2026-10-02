@@ -101,7 +101,7 @@ pub fn read_text() -> Option<String> {
 }
 
 fn set_msg(msg: &Arc<Mutex<String>>, ctx: &eframe::egui::Context, text: &str) {
-    *msg.lock().unwrap() = text.to_string();
+    *msg.lock().unwrap_or_else(|e| e.into_inner()) = text.to_string();
     ctx.request_repaint();
 }
 
@@ -230,7 +230,7 @@ fn on_clipboard_update() {
         return;
     };
     {
-        let mut last = LAST_SEEN.lock().unwrap();
+        let mut last = LAST_SEEN.lock().unwrap_or_else(|e| e.into_inner());
         if *last == token {
             return;
         }
@@ -245,13 +245,13 @@ fn on_clipboard_update() {
     match LeigodClient::new(Duration::from_secs(8)).info(&token) {
         Ok(info) => match actions::apply_token(state, &token) {
             Ok(()) => {
-                *state.pause_status.lock().unwrap() = info.pause_status_id;
+                *state.pause_status.lock().unwrap_or_else(|e| e.into_inner()) = info.pause_status_id;
                 state.token_valid.store(true, std::sync::atomic::Ordering::SeqCst);
                 let txt = "剪贴板 token 验证通过，已保存";
                 set_msg(msg, ctx, txt);
                 log(state, txt);
                 state.push_notify("token 已自动更新", "剪贴板识别到 token，验证通过并已写入配置");
-                *deadline.lock().unwrap() = None; // 成功后结束监听
+                *deadline.lock().unwrap_or_else(|e| e.into_inner()) = None; // 成功后结束监听
             }
             Err(e) => {
                 let txt = format!("验证通过但保存失败：{e}");
