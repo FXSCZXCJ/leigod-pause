@@ -1,6 +1,6 @@
 //! 剪贴板自动识别 token（登录页「复制命令」后的自动流程）
 //!
-//! 仅在设置里开启「剪贴板自动识别」后工作：点「复制命令」启动 30 秒监听，
+//! 仅在设置里开启「剪贴板自动识别」后工作：点「复制命令」启动 60 秒监听，
 //! 期间轮询剪贴板 → 从文本里提取候选 token → 调 info 接口验证 →
 //! 验证通过才写入 config.ini。识别不出的内容（多行文本等）一律忽略。
 
@@ -12,7 +12,7 @@ use crate::api::LeigodClient;
 use crate::state::{log, AppState};
 
 /// 点「复制命令」后监听剪贴板的时长（秒）
-pub const WATCH_SECONDS: u64 = 30;
+pub const WATCH_SECONDS: u64 = 60;
 /// 轮询间隔
 // 改为系统剪贴板变更通知（WM_CLIPBOARDUPDATE），不再轮询
 
@@ -188,7 +188,7 @@ pub fn spawn_watcher(
             match hwnd {
                 Ok(hwnd) => {
                     if unsafe { AddClipboardFormatListener(hwnd) }.is_ok() {
-                        log(&state, "[剪贴板] 监听已就绪（复制命令后 30 秒内自动识别 token）");
+                        log(&state, "[剪贴板] 监听已就绪（复制命令后 60 秒内自动识别 token）");
                     } else {
                         log(&state, "[剪贴板] 注册剪贴板监听失败，自动识别不可用");
                     }
