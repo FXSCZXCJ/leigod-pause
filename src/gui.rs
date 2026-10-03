@@ -238,12 +238,14 @@ impl App {
     }
 
     /// 把取 token 的命令复制到剪贴板；auto=true 表示「进登录页自动复制」触发。
-    /// 剪贴板自动识别开着时，顺手开启 30 秒监听，形成闭环。
+    /// 剪贴板监听只在**手动点击「复制命令」按钮**后开启（进入登录页只复制、不监听），
+    /// 且需设置里开着「剪贴板自动识别 token」。
     fn copy_token_cmd(&mut self, ctx: &egui::Context, auto: bool) {
         ctx.copy_text(TOKEN_CONSOLE_CMD.to_string());
         self.copied_at = Some(std::time::Instant::now());
         self.copied_auto = auto;
-        let watch_on = self.clip_watch || self.cfg.read().unwrap_or_else(|e| e.into_inner()).clip_watch;
+        let watch_on = !auto
+            && (self.clip_watch || self.cfg.read().unwrap_or_else(|e| e.into_inner()).clip_watch);
         if watch_on {
             *self.clip_deadline.lock().unwrap_or_else(|e| e.into_inner()) = Some(
                 std::time::Instant::now()
@@ -447,6 +449,29 @@ impl eframe::App for App {
             ui.add_space(2.0);
         });
 
+        // ---- 底栏：最新一条日志，点击进日志页 ----
+        egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                if ui
+                    .selectable_label(self.page == Page::Logs, "🗒 日志")
+                    .clicked()
+                {
+                    self.page = Page::Logs;
+                }
+                let latest = self
+                    .state
+                    .log_buf
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .back()
+                    .cloned()
+                    .unwrap_or_else(|| "（暂无日志）".to_string());
+                ui.add(
+                    egui::Label::new(egui::RichText::new(latest).small().weak()).truncate(),
+                );
+            });
+        });
+
         egui::CentralPanel::default().show(ctx, |ui| match self.page {
             Page::Status => self.ui_status(ui),
             Page::Settings => self.ui_settings(ui),
@@ -503,6 +528,16 @@ impl App {
                 _ => "未知（点查询获取）".to_string(),
             }
         ));
+        // 游戏在跑但账号显示已暂停：多半是用户在客户端手动加速了，
+        // 而客户端的加速会话不会取消「时长暂停」标记（实测时长确实没在扣）
+        if matches!(monitor, MonitorStatus::InGame(_)) && pause_status == Some(1) {
+            ui.colored_label(
+                tone::muted(ui),
+                "提示：当前时长暂停仍在生效，游戏时长未在消耗。\
+                 雷神客户端里手动加速不会自动取消暂停；\
+                 如需游戏时正常计费，点「恢复加速」或开启设置里的「游戏启动时自动恢复加速」。",
+            );
+        }
         ui.separator();
 
         ui.horizontal_wrapped(|ui| {
@@ -842,8 +877,8 @@ impl App {
                 });
 
             ui.small(
-                "剪贴板自动识别：开启后，在登录页点「复制命令」会在 30 秒内监听剪贴板，\
-                 识别到 token 先调接口验证，验证通过才保存（默认关闭）。",
+                "剪贴板自动识别：开启后，在登录页点「复制命令」按钮会在 60 秒内监听剪贴板\
+                 （进入登录页本身不监听），识别到 token 先调接口验证，验证通过才保存（默认关闭）。",
             );
 
             ui.add_space(8.0);
