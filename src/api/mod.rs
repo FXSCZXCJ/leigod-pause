@@ -62,6 +62,32 @@ pub struct SmsInfo {
     pub expiry: String,
 }
 
+/// 时长明细单条记录（/api/user/time/log：恢复/暂停成对出现）
+#[derive(Debug, Clone, Default)]
+pub struct TimeLogEntry {
+    /// 恢复时间
+    pub recover_time: String,
+    /// 恢复端（雷神 PC 端 / 雷神官网 / 活动时长…）
+    pub recover_tag: String,
+    /// 暂停时间；为空表示当前正在计费（时长消耗中）
+    pub pause_time: String,
+    /// 暂停端
+    pub pause_tag: String,
+    /// 单次消耗（秒）
+    pub reduce_secs: i64,
+    /// 本次暂停后的剩余时长（秒）
+    pub pause_surplus_secs: i64,
+}
+
+/// 时长明细分页结果
+#[derive(Debug, Clone, Default)]
+pub struct TimeLogPage {
+    pub total: usize,
+    pub current_page: usize,
+    pub last_page: usize,
+    pub entries: Vec<TimeLogEntry>,
+}
+
 pub struct LeigodClient {
     hosts: Vec<String>,
     http: reqwest::blocking::Client,
@@ -184,9 +210,37 @@ impl LeigodClient {
         }
     }
 
+    /// 时长明细：恢复/暂停记录，按页查询（page 从 1 开始）
+    pub fn time_log(&self, token: &str, page: usize) -> Result<TimeLogPage, ApiError> {
+        let data = self.parse(self.request(
+            "/api/user/time/log",
+            &json!({"account_token": token, "lang": "zh_CN", "os_type": 4, "page": page}),
+        )?)?;
+        let entries = data["list"]
+            .as_array()
+            .map(|list| {
+                list.iter()
+                    .map(|e| TimeLogEntry {
+                        recover_time: e["recover_time"].as_str().unwrap_or_default().into(),
+                        recover_tag: e["recover_tag"].as_str().unwrap_or_default().into(),
+                        pause_time: e["pause_time"].as_str().unwrap_or_default().into(),
+                        pause_tag: e["pause_tag"].as_str().unwrap_or_default().into(),
+                        reduce_secs: e["reduce_pause_time"].as_i64().unwrap_or(0),
+                        pause_surplus_secs: e["pause_surplus_time"].as_i64().unwrap_or(0),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok(TimeLogPage {
+            total: data["total"].as_u64().unwrap_or(0) as usize,
+            current_page: data["current_page"].as_u64().unwrap_or(page as u64) as usize,
+            last_page: data["last_page"].as_u64().unwrap_or(1) as usize,
+            entries,
+        })
+    }
+
     /// 恢复计时
-    pub fn recover(&self, token: &str) -> Result<String, ApiError> {
-        match self.parse(self.request(
+    pub fn recover(&self, token: &str) -> Result<String, ApiError> {        match self.parse(self.request(
             "/api/user/recover",
             &json!({"account_token": token, "lang": "zh_CN", "os_type": 4}),
         )?) {

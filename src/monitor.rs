@@ -41,6 +41,7 @@ pub fn run(state: Arc<AppState>, cfg: Arc<SharedConfig>, rx: Receiver<MonCmd>) {
     let mut next_fake_check = Instant::now();
     // 启动验证窗口：前 5 分钟加密巡检剩余时长，兜住「未暂停 / 假暂停」的漏网场景
     let startup_verify_until = Instant::now() + Duration::from_secs(300);
+    let mut startup_verified = false;
 
     log(&state, "监控线程启动");
     // 启动时自动查询一次账号状态（query_info 内部会记录成败并更新 token_valid）
@@ -321,6 +322,18 @@ pub fn run(state: Arc<AppState>, cfg: Arc<SharedConfig>, rx: Receiver<MonCmd>) {
                                 log(&state, "假暂停解除：剩余时长已恢复稳定");
                             }
                             fake_strikes = 0;
+                            // 启动验证窗口内首次确认「真的没在扣」时写日志，可从日志核对
+                            if in_startup_window && !startup_verified {
+                                startup_verified = true;
+                                log(
+                                    &state,
+                                    &format!(
+                                        "启动验证通过：剩余时长稳定（{} 秒采样无消耗），确认暂停有效（剩余 {}）",
+                                        min_gap,
+                                        crate::state::fmt_hms(exp)
+                                    ),
+                                );
+                            }
                         }
                         (false, None) => {}
                     }

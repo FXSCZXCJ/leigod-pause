@@ -35,7 +35,7 @@ pub fn query_info(state: &AppState) -> Result<AccountInfo, ApiError> {
             if let Some(exp) = info.expiry_time_samp {
                 state.sync_remaining(exp);
             }
-            let txt = format!(
+            let mut txt = format!(
                 "查询成功：{}",
                 match info.pause_status_id {
                     Some(1) => "已暂停".to_string(),
@@ -43,6 +43,10 @@ pub fn query_info(state: &AppState) -> Result<AccountInfo, ApiError> {
                     other => format!("状态 {}", other.map(|o| o.to_string()).unwrap_or_else(|| "未知".into())),
                 }
             );
+            // 日志与「最近操作」附带剩余时长，方便核对是否真的在暂停
+            if let Some(exp) = info.expiry_time_samp {
+                txt.push_str(&format!("（剩余 {}）", crate::state::fmt_hms(exp)));
+            }
             state.set_api_result(&txt);
             log(state, &txt);
             Ok(info)
@@ -253,6 +257,40 @@ pub fn force_pause_for_shutdown(state: &AppState) -> String {
         }
     }
     "暂停请求未成功，已尽力尝试".into()
+}
+
+/// 拉取云端时长明细（恢复/暂停记录，page 从 1 开始）
+pub fn fetch_time_log(state: &AppState, page: usize) -> Result<crate::api::TimeLogPage, ApiError> {
+    let token = state.token();
+    if token.is_empty() {
+        return Err(ApiError::Api {
+            code: -1,
+            msg: "尚未配置 token".into(),
+        });
+    }
+    let c = client(Duration::from_secs(10));
+    c.time_log(&token, page)
+}
+
+/// 用系统默认浏览器打开网址（登录页「打开雷神官网」按钮用）
+pub fn open_url(state: &AppState, url: &str) {
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    let r = unsafe {
+        ShellExecuteW(
+            None,
+            windows::core::w!("open"),
+            &windows::core::HSTRING::from(url),
+            None,
+            None,
+            SW_SHOWNORMAL,
+        )
+    };
+    if (r.0 as isize) > 32 {
+        log(state, &format!("已用默认浏览器打开: {url}"));
+    } else {
+        log(state, &format!("打开网址失败: {url}"));
+    }
 }
 
 /// 打开雷神客户端：① 注册表自动定位 ② 回退 config.ini 的 path ③ 都失败才报错。
