@@ -28,6 +28,15 @@ pub fn init_toast_identity() -> String {
         .unwrap_or_default();
     match ensure_aumid_shortcut(TOAST_AUMID_OWN, &exe) {
         Ok(()) => {
+            // 通知角标图标：快捷方式旁的 VisualElementsManifest + PNG 资源。
+            // 缺了它们 toast 图标是空白的；写失败只影响图标，不影响身份注册。
+            let programs = programs_dir();
+            let assets = write_toast_assets(&programs.join(TOAST_ASSET_DIR))
+                .and_then(|()| write_toast_manifest(&programs));
+            match assets {
+                Ok(()) => log_state("通知图标资源已就绪（VisualElementsManifest + PNG）"),
+                Err(e) => log_state(&format!("通知图标资源写入失败({e})，通知图标可能空白")),
+            }
             log_state(&format!("通知身份已注册为「雷神自动暂停」({TOAST_AUMID_OWN})"));
             TOAST_AUMID_OWN.into()
         }
@@ -38,6 +47,45 @@ pub fn init_toast_identity() -> String {
     }
 }
 
+/// 开始菜单 Programs 目录
+fn programs_dir() -> std::path::PathBuf {
+    let base = std::env::var("APPDATA").unwrap_or_default();
+    std::path::PathBuf::from(base).join(r"Microsoft\Windows\Start Menu\Programs")
+}
+
+/// 通知图标资源目录名（相对 Programs；manifest 里的路径相对 lnk 所在目录）
+const TOAST_ASSET_DIR: &str = "LeigodPauseToast";
+
+/// 把内置雷神图标导出为 toast 所需的 PNG（44x44 角标与 150x150）
+fn write_toast_assets(dir: &std::path::Path) -> Result<(), String> {
+    use image::imageops::FilterType;
+    let (rgba, w, h) = crate::tray::embedded_icon_rgba();
+    let img = image::RgbaImage::from_raw(w, h, rgba).ok_or("图标 RGBA 数据无效")?;
+    std::fs::create_dir_all(dir).map_err(|e| format!("创建图标资源目录失败: {e}"))?;
+    for size in [150u32, 44u32] {
+        image::imageops::resize(&img, size, size, FilterType::Lanczos3)
+            .save_with_format(dir.join(format!("toast-{size}.png")), image::ImageFormat::Png)
+            .map_err(|e| format!("写出 toast-{size}.png 失败: {e}"))?;
+    }
+    Ok(())
+}
+
+/// 写 VisualElementsManifest：Windows 据此为 toast 角标加载图标
+fn write_toast_manifest(programs: &std::path::Path) -> Result<(), String> {
+    let xml = format!(
+        r##"<Application xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+	<VisualElements BackgroundColor="#1F1F1F" ShowNameOnSquare150x150Logo="false" Square150x150Logo="{dir}\toast-150.png" Square44x44Logo="{dir}\toast-44.png"/>
+</Application>
+"##,
+        dir = TOAST_ASSET_DIR
+    );
+    std::fs::write(
+        programs.join("雷神自动暂停.VisualElementsManifest.xml"),
+        xml,
+    )
+    .map_err(|e| format!("写 VisualElementsManifest 失败: {e}"))
+}
+
 fn log_state(msg: &str) {
     // 由 main 在状态创建后调用，这里兜底直接输出（无控制台时写 stdout 会失败，忽略）
     use std::io::Write;
@@ -45,10 +93,7 @@ fn log_state(msg: &str) {
 }
 
 fn aumid_lnk_path() -> std::path::PathBuf {
-    let base = std::env::var("APPDATA").unwrap_or_default();
-    std::path::PathBuf::from(base)
-        .join(r"Microsoft\Windows\Start Menu\Programs")
-        .join("雷神自动暂停.lnk")
+    programs_dir().join("雷神自动暂停.lnk")
 }
 
 fn ensure_aumid_shortcut(aumid: &str, exe: &str) -> Result<(), String> {

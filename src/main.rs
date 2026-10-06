@@ -83,6 +83,7 @@ fn main() {
         Some("status") => cli_status(&config_path),
         Some("steam") => cli_steam(),
         Some("autostart") => cli_autostart(positional.get(1).map(|s| s.as_str())),
+        Some("notify") => cli_notify(positional.get(1).map(|s| s.as_str())),
         None => run_gui(&config_path, show_window, console_mode, stdio_state),
         Some(other) => {
             eprintln!("未知命令 {other}");
@@ -182,6 +183,7 @@ fn print_help() {
          \x20 leigod-pause.exe sms           触发下发短信验证码\n\
          \x20 leigod-pause.exe code <n>      用验证码更新 token\n\
          \x20 leigod-pause.exe status        查询本机接口状态\n\
+         \x20 leigod-pause.exe notify [文本]  发一条测试通知（验证通知图标）\n\
          验证码自动接口: POST http://127.0.0.1:{{port}}/token/sms | /token/code  或  命名管道 \\\\.\\pipe\\leigod-sms-code",
         v = env!("CARGO_PKG_VERSION")
     );
@@ -275,6 +277,23 @@ fn cli_steam() {
     println!("发现 {} 个 Steam 游戏：", games.len());
     for g in &games {
         println!("  {:<40} {}", g.name, g.dir);
+    }
+}
+
+/// 发一条 Windows 通知（测试通知图标；顺带补齐/刷新 AUMID 快捷方式与图标资源）
+fn cli_notify(text: Option<&str>) {
+    let aumid = events::init_toast_identity();
+    let body = text.unwrap_or("通知图标测试");
+    let r = tauri_winrt_notification::Toast::new(&aumid)
+        .title("雷神自动暂停")
+        .text1(body)
+        .show();
+    match r {
+        Ok(()) => println!("通知已发送（AUMID: {aumid}），请查看右下角弹窗与图标"),
+        Err(e) => {
+            eprintln!("通知发送失败: {e}");
+            std::process::exit(1);
+        }
     }
 }
 
