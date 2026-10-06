@@ -1,6 +1,6 @@
 [package]
 name = "leigod-pause"
-version = "3.4.0"
+version = "3.5.0"
 edition = "2021"
 description = "雷神加速器时长自动暂停 (Rust 版)"
 license = "MIT"
