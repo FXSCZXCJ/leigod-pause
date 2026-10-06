@@ -126,3 +126,9 @@ POST /api/auth/login/v2   (带 sign)
   1. `do_pause` 总是调用 `/api/user/pause`（服务端真在暂停会返回 400803，幂等无害），以接口实际行动为准
   2. 空闲且标记为已暂停时，每 ~60s 采样 `expiry_time_samp`，间隔 ≥120s 且减少 ≥30s 判定真实在计费 → 重新暂停并弹通知；连续两轮无效则先恢复再暂停强制刷新
   3. 游戏运行中检测到仅标记告警（此时计费属预期），不动作
+
+## 时长明细接口（2026-10-06 实测打通）
+
+- `POST https://webapi.leigod.com/api/user/time/log`，body `{"account_token":"...","page":1}`（page 可选，从 1 起）
+- 返回 `data.{total, current_page, last_page, list[]}`；list 元素：`recover_time/recover_tag`（恢复时间/端）、`pause_time/pause_tag`（暂停时间/端，**为空 = 当前正在计费**）、`reduce_pause_time`（单次消耗秒数）、`pause_surplus_time`（暂停后剩余秒数）
+- 注意：官网面板走 `www.leigod.com/webapi/api/user/time/log`（Nuxt 同源代理 + cookie 会话，token 调不通）；直连 token 认证用 webapi 主机的 `/api/user/time/log` 即可
