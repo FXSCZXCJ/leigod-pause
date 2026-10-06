@@ -50,6 +50,9 @@ impl ApiError {
 #[derive(Debug, Clone)]
 pub struct AccountInfo {
     pub pause_status_id: Option<i64>,
+    /// 剩余可暂停时长（秒）。云端「已暂停」标记可能是假暂停（客户端恢复计费不清标记），
+    /// 定期采样该值是否减少是检测真实计费状态的可靠手段
+    pub expiry_time_samp: Option<i64>,
     pub raw: Value,
 }
 
@@ -160,19 +163,22 @@ impl LeigodClient {
         )?)?;
         Ok(AccountInfo {
             pause_status_id: data["pause_status_id"].as_i64(),
+            expiry_time_samp: data["expiry_time_samp"].as_i64(),
             raw: data,
         })
     }
 
-    /// 暂停计时。已暂停(400803)视为成功，返回说明文本
-    pub fn pause(&self, token: &str) -> Result<String, ApiError> {
+    /// 暂停计时。已暂停(400803)视为成功；返回 (是否本次真正执行了暂停, 说明文本)。
+    /// 注意：云端「已暂停」标记可能是假暂停（客户端恢复计费不清标记），
+    /// 调用方不能因标记跳过本接口——服务端的实际行动才是权威结果。
+    pub fn pause(&self, token: &str) -> Result<(bool, String), ApiError> {
         match self.parse(self.request(
             "/api/user/pause",
             &json!({"account_token": token, "lang": "zh_CN", "os_type": 4}),
         )?) {
-            Ok(_) => Ok("暂停成功".into()),
+            Ok(_) => Ok((true, "暂停成功".into())),
             Err(ApiError::Api { code, msg: _ }) if code == CODE_ALREADY_PAUSED => {
-                Ok("已处于暂停状态".into())
+                Ok((false, "已处于暂停状态".into()))
             }
             Err(e) => Err(e),
         }

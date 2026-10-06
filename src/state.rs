@@ -6,9 +6,10 @@
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Mutex, RwLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::Local;
 use eframe::egui;
@@ -56,6 +57,12 @@ pub struct AppState {
     pub token_valid: AtomicBool,
     /// 最近一次已知的账号暂停状态（0=加速中 1=已暂停）
     pub pause_status: Mutex<Option<i64>>,
+    /// 假暂停告警：云端标记「已暂停」但采样发现时长正在消耗
+    pub fake_pause: AtomicBool,
+    /// 最近一次同步的剩余时长（秒，-1=未知）。同步点：查询/暂停/恢复/游戏状态变化
+    pub remaining_secs: AtomicI64,
+    /// remaining_secs 的采样时刻（UNIX 秒）；GUI 在「加速中」按它本地秒级递减
+    pub remaining_at: AtomicU64,
     /// 监控状态机当前状态
     pub monitor: Mutex<MonitorStatus>,
     /// 宽限期剩余秒（GUI 倒计时显示用）
@@ -89,6 +96,9 @@ impl AppState {
             token_version: AtomicU64::new(0),
             token_valid: AtomicBool::new(false),
             pause_status: Mutex::new(None),
+            fake_pause: AtomicBool::new(false),
+            remaining_secs: AtomicI64::new(-1),
+            remaining_at: AtomicU64::new(0),
             monitor: Mutex::new(MonitorStatus::Idle),
             grace_remaining: AtomicU64::new(0),
             pending_pause: AtomicBool::new(false),
@@ -155,6 +165,52 @@ impl AppState {
 
     pub fn set_api_result(&self, text: &str) {
         *self.last_api_result.lock().unwrap_or_else(|e| e.into_inner()) = text.to_string();
+    }
+
+    /// 同步剩余时长（在每次成功查询时调用）
+    pub fn sync_remaining(&self, secs: i64) {
+        self.remaining_secs.store(secs, Ordering::SeqCst);
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        self.remaining_at.store(now, Ordering::SeqCst);
+    }
+
+    /// 计算当前应显示的剩余时长：加速中按采样时刻本地递减，暂停中时长不走表、原值显示
+    pub fn remaining_display(&self, billing: bool) -> Option<i64> {
+        let secs = self.remaining_secs.load(Ordering::SeqCst);
+        if secs < 0 {
+            return None;
+        }
+        if !billing {
+            return Some(secs);
+        }
+        let at = self.remaining_at.load(Ordering::SeqCst);
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(at);
+        Some((secs - (now.saturating_sub(at)) as i64).max(0))
+    }
+}
+
+/// 剩余时长显示格式：18时50分57秒
+pub fn fmt_hms(total_secs: i64) -> String {
+    let t = total_secs.max(0);
+    format!("{:02}时{:02}分{:02}秒", t / 3600, (t % 3600) / 60, t % 60)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fmt_hms;
+
+    #[test]
+    fn fmt_hms_matches_client_style() {
+        assert_eq!(fmt_hms(0), "00时00分00秒");
+        assert_eq!(fmt_hms(18 * 3600 + 50 * 60 + 57), "18时50分57秒");
+        assert_eq!(fmt_hms(-5), "00时00分00秒");
+        assert_eq!(fmt_hms(3661), "01时01分01秒");
     }
 }
 

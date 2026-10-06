@@ -31,6 +31,10 @@ pub fn query_info(state: &AppState) -> Result<AccountInfo, ApiError> {
         Ok(info) => {
             state.token_valid.store(true, Ordering::SeqCst);
             *state.pause_status.lock().unwrap_or_else(|e| e.into_inner()) = info.pause_status_id;
+            // 剩余时长同步：显示层在加速中按采样时刻本地秒级递减
+            if let Some(exp) = info.expiry_time_samp {
+                state.sync_remaining(exp);
+            }
             let txt = format!(
                 "查询成功：{}",
                 match info.pause_status_id {
@@ -54,8 +58,10 @@ pub fn query_info(state: &AppState) -> Result<AccountInfo, ApiError> {
     }
 }
 
-/// 暂停计时：先读账号状态，已暂停则跳过调用（避免重复触发与重复提示）。
-/// 返回 (是否实际执行了暂停变更, 说明文本)
+/// 暂停计时：总是调用暂停接口，以服务端实际行动为准。
+/// 返回 (是否本次真正执行了暂停变更, 说明文本)。
+/// 注意：不能凭云端「已暂停」标记跳过调用——客户端恢复计费不清除该标记（假暂停），
+/// 跳过会导致游戏退出后时长持续漏扣；服务端真在暂停会返回 400803（已暂停）。
 pub fn do_pause(state: &AppState) -> Result<(bool, String), ApiError> {
     let token = state.token();
     if token.is_empty() {
@@ -69,28 +75,18 @@ pub fn do_pause(state: &AppState) -> Result<(bool, String), ApiError> {
         });
     }
 
-    // 关键节点：先读暂停状态
-    match query_info(state) {
-        Ok(info) if info.pause_status_id == Some(1) => {
-            state.pending_pause.store(false, Ordering::SeqCst);
-            *state.pause_status.lock().unwrap_or_else(|e| e.into_inner()) = Some(1);
-            state.set_api_result("查询确认：已处于暂停状态，无需重复暂停");
-            log(state, "暂停跳过：账号已处于暂停状态");
-            return Ok((false, "已处于暂停状态".into()));
-        }
-        Ok(_) => {}   // 加速中 → 正常走暂停
-        Err(_) => {}  // 查询失败（如网络抖动）→ 保守起见仍尝试直接暂停
-    }
+    // 先查一次：只为刷新展示（token 灯、暂停状态）
+    let _ = query_info(state);
 
     let c = client(Duration::from_secs(8));
     match c.pause(&token) {
-        Ok(msg) => {
+        Ok((changed, msg)) => {
             state.pending_pause.store(false, Ordering::SeqCst);
             state.token_valid.store(true, Ordering::SeqCst);
             *state.pause_status.lock().unwrap_or_else(|e| e.into_inner()) = Some(1);
             state.set_api_result(&msg);
             log(state, &format!("暂停计时：{msg}"));
-            Ok((true, msg))
+            Ok((changed, msg))
         }
         Err(e) => {
             if e.is_session_expired() {
@@ -244,8 +240,11 @@ pub fn force_pause_for_shutdown(state: &AppState) -> String {
     let c = client(Duration::from_secs(2));
     for attempt in 1..=2 {
         match c.pause(&token) {
-            Ok(msg) => {
-                log(state, &format!("关机强制暂停成功(第{attempt}次): {msg}"));
+            Ok((changed, msg)) => {
+                log(
+                    state,
+                    &format!("关机强制暂停成功(第{attempt}次, 实际暂停={changed}): {msg}"),
+                );
                 return msg;
             }
             Err(e) => {

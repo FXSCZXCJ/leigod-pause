@@ -35,6 +35,12 @@ pub fn run(state: Arc<AppState>, cfg: Arc<SharedConfig>, rx: Receiver<MonCmd>) {
     let mut next_steam_refresh = Instant::now();
     // 启动自动检测：首次循环时，无游戏运行且未暂停 → 立即暂停
     let mut startup_check_pending = true;
+    // 假暂停巡检：采样剩余时长，对比检测「标记暂停但时长在扣」
+    let mut last_exp_sample: Option<(Instant, i64)> = None;
+    let mut fake_strikes: u32 = 0;
+    let mut next_fake_check = Instant::now();
+    // 启动验证窗口：前 5 分钟加密巡检剩余时长，兜住「未暂停 / 假暂停」的漏网场景
+    let startup_verify_until = Instant::now() + Duration::from_secs(300);
 
     log(&state, "监控线程启动");
     // 启动时自动查询一次账号状态（query_info 内部会记录成败并更新 token_valid）
@@ -215,7 +221,7 @@ pub fn run(state: Arc<AppState>, cfg: Arc<SharedConfig>, rx: Receiver<MonCmd>) {
             },
         }
 
-        // 启动自动检测：无游戏运行且账号未暂停 → 立即暂停（已暂停会被 do_pause 静默跳过）
+        // 启动自动检测：无游戏运行且未暂停 → 立即暂停（真在暂停时服务端返回已暂停，幂等）
         if startup_check_pending {
             startup_check_pending = false;
             if !game_running {
@@ -231,6 +237,97 @@ pub fn run(state: Arc<AppState>, cfg: Arc<SharedConfig>, rx: Receiver<MonCmd>) {
             } else {
                 log(&state, "启动检测：检测到游戏正在运行，不暂停");
             }
+        }
+
+        // 6) 假暂停巡检 + 启动验证窗口：雷神客户端恢复加速不清除云端「已暂停」标记（假暂停），
+        //    空闲状态下时长会持续漏扣。采样剩余时长：间隔足够且减少 ≥30s 判定真实在计费。
+        //    - 启动后 5 分钟内：无论标记状态都加密巡检（60s 间隔），发现「未暂停/假暂停」立即补暂停
+        //    - 平时：标记为已暂停才巡检（120s 间隔）
+        //    - 游戏运行中仅告警（计费属预期），不动作；连续两轮修复无效则先恢复再暂停强制刷新
+        let believed_paused = state
+            .pause_status
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .eq(&Some(1));
+        let in_startup_window = Instant::now() < startup_verify_until;
+        if (believed_paused || (in_startup_window && matches!(mode, Mode::Idle)))
+            && state.token_valid.load(Ordering::SeqCst)
+            && !state.pending_pause.load(Ordering::SeqCst)
+            && Instant::now() >= next_fake_check
+        {
+            next_fake_check = Instant::now() + Duration::from_secs(60);
+            let min_gap = if in_startup_window {
+                60
+            } else {
+                FAKE_CHECK_MIN_GAP_SECS
+            };
+            if let Ok(info) = actions::query_info(&state) {
+                if let Some(exp) = info.expiry_time_samp {
+                    let now = Instant::now();
+                    let gap_ok = matches!(last_exp_sample, Some((at, _))
+                        if now.duration_since(at).as_secs() >= min_gap);
+                    let drained = match last_exp_sample {
+                        Some((at, val)) if gap_ok => {
+                            detect_draining(at, val, now, exp, min_gap, FAKE_MIN_DRAIN_SECS)
+                        }
+                        _ => None,
+                    };
+                    last_exp_sample = Some((now, exp));
+                    match (gap_ok, drained) {
+                        (_, Some(used)) => {
+                            state.fake_pause.store(true, Ordering::SeqCst);
+                            if matches!(mode, Mode::Idle) {
+                                fake_strikes += 1;
+                                log(
+                                    &state,
+                                    &format!(
+                                        "检测到假暂停：云端标记已暂停但剩余时长在减少（约 {} 秒/巡检周期），执行重新暂停",
+                                        used
+                                    ),
+                                );
+                                let fix = if fake_strikes >= 2 {
+                                    log(&state, "重新暂停后仍在计费，改为先恢复再暂停强制刷新服务端状态");
+                                    let _ = actions::do_recover(&state);
+                                    actions::do_pause(&state)
+                                } else {
+                                    actions::do_pause(&state)
+                                };
+                                match fix {
+                                    Ok((true, msg)) => {
+                                        fake_strikes = 0;
+                                        state.push_notify(
+                                            "假暂停已修复",
+                                            &format!(
+                                                "云端标记暂停但时长在计费（本轮消耗约 {} 秒），已重新暂停：{}",
+                                                used, msg
+                                            ),
+                                        );
+                                    }
+                                    Ok((false, msg)) => {
+                                        // 服务端仍报已暂停却还在计费 → 下一轮巡检继续处理
+                                        log(&state, &format!("假暂停修复未生效：{msg}"));
+                                    }
+                                    Err(e) => log(&state, &format!("假暂停修复失败: {e}")),
+                                }
+                            } else {
+                                log(
+                                    &state,
+                                    "云端标记已暂停但时长在消耗（假暂停标记）；游戏运行中计费属预期，暂不处理",
+                                );
+                            }
+                        }
+                        (true, None) => {
+                            if state.fake_pause.swap(false, Ordering::SeqCst) {
+                                log(&state, "假暂停解除：剩余时长已恢复稳定");
+                            }
+                            fake_strikes = 0;
+                        }
+                        (false, None) => {}
+                    }
+                }
+            }
+        } else if !believed_paused && !in_startup_window && state.fake_pause.swap(false, Ordering::SeqCst) {
+            log(&state, "云端暂停标记已恢复正常（加速中）");
         }
 
         std::thread::sleep(Duration::from_secs(conf.update.max(1)));
@@ -330,6 +427,29 @@ fn process_image_path(pid: u32) -> String {
         };
         let _ = CloseHandle(h);
         path
+    }
+}
+
+/// 假暂停巡检：两次采样的最小间隔（秒）
+const FAKE_CHECK_MIN_GAP_SECS: u64 = 120;
+/// 假暂停巡检：判定真实在计费的最小消耗量（秒）
+const FAKE_MIN_DRAIN_SECS: i64 = 30;
+
+/// 假暂停检测：两次剩余时长采样间隔足够、且数值减少达到阈值 → 判定真实在计费，
+/// 返回本周期消耗的秒数
+fn detect_draining(
+    prev_at: Instant,
+    prev_val: i64,
+    now: Instant,
+    val: i64,
+    min_gap_secs: u64,
+    min_drain: i64,
+) -> Option<i64> {
+    let gap = now.duration_since(prev_at).as_secs();
+    if gap >= min_gap_secs && prev_val - val >= min_drain {
+        Some(prev_val - val)
+    } else {
+        None
     }
 }
 
@@ -495,6 +615,27 @@ mod tests {
     fn blacklist_case_insensitive_and_empty() {
         assert!(is_blacklisted("WALLPAPER64.EXE", "", &["Wallpaper64".to_string()]));
         assert!(!is_blacklisted("anything.exe", r"c:\x\anything.exe", &[]));
+    }
+
+    #[test]
+    fn detect_draining_flags_real_billing() {
+        // 间隔不足 → 不判定
+        let t0 = Instant::now();
+        let t1 = Instant::now();
+        assert_eq!(detect_draining(t0, 150_000, t1, 149_000, 120, 30), None);
+        // 间隔足够且在消耗 → 判定并返回消耗量
+        let past = Instant::now()
+            .checked_sub(Duration::from_secs(130))
+            .expect("时钟回拨");
+        assert_eq!(
+            detect_draining(past, 150_000, Instant::now(), 149_900, 120, 30),
+            Some(100)
+        );
+        // 间隔足够但时长稳定（真暂停）→ 不判定
+        assert_eq!(
+            detect_draining(past, 150_000, Instant::now(), 150_000, 120, 30),
+            None
+        );
     }
 
     #[test]
