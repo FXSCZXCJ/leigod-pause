@@ -110,6 +110,8 @@ pub struct App {
     login_busy: Arc<std::sync::atomic::AtomicBool>,
     /// 最近一次「复制命令」的时间（用于短暂显示已复制提示）
     copied_at: Option<std::time::Instant>,
+    /// 日志页「复制全部」的已复制提示时间
+    logs_copied: Option<std::time::Instant>,
     /// 最近一次复制是否由「进入登录页自动复制」触发（提示文案不同）
     copied_auto: bool,
     /// 本次停留在登录页是否已自动复制过（避免每帧重复复制）
@@ -195,6 +197,7 @@ impl App {
             login_msg: Arc::new(Mutex::new(String::new())),
             login_busy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             copied_at: None,
+            logs_copied: None,
             copied_auto: false,
             login_auto_copied: false,
             clip_deadline: Arc::new(Mutex::new(None)),
@@ -449,6 +452,61 @@ impl eframe::App for App {
             ui.add_space(2.0);
         });
 
+        // ---- 状态条：菜单栏正下方常驻，所有页签可见 ----
+        egui::TopBottomPanel::top("status_strip").show(ctx, |ui| {
+            ui.add_space(2.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.add_space(8.0);
+                // token 灯
+                let (dot, text) = if self.state.token().is_empty() {
+                    (tone::muted(ui), "token 未配置")
+                } else if self.state.token_valid.load(Ordering::SeqCst) {
+                    (tone::ok(ui), "token 有效")
+                } else {
+                    (tone::err(ui), "token 失效")
+                };
+                let (resp, painter) =
+                    ui.allocate_painter(egui::vec2(12.0, 12.0), egui::Sense::hover());
+                painter.circle_filled(resp.rect.center(), 4.0, dot);
+                ui.small(text);
+                ui.separator();
+
+                // 监控状态（宽限期附带秒数）
+                let monitor = self
+                    .state
+                    .monitor
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone();
+                let grace = self.state.grace_remaining.load(Ordering::SeqCst);
+                let mut mon_text = format!("监控：{}", monitor.gui_text());
+                if matches!(monitor, MonitorStatus::Grace(_)) {
+                    mon_text.push_str(&format!("（剩 {grace} 秒）"));
+                }
+                ui.small(mon_text);
+                ui.separator();
+
+                // 账号状态
+                let pause_status =
+                    *self.state.pause_status.lock().unwrap_or_else(|e| e.into_inner());
+                ui.small(format!(
+                    "账号：{}",
+                    match pause_status {
+                        Some(1) => "已暂停 ⏸",
+                        Some(0) => "加速中 ▶",
+                        _ => "未知",
+                    }
+                ));
+                ui.separator();
+
+                // 剩余时长（加速中两次同步之间本地秒级递减）
+                if let Some(rem) = self.state.remaining_display(pause_status == Some(0)) {
+                    ui.small(format!("剩余：{}", crate::state::fmt_hms(rem)));
+                }
+            });
+            ui.add_space(2.0);
+        });
+
         // ---- 底栏：最新一条日志，点击进日志页 ----
         egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
             ui.horizontal(|ui| {
@@ -486,10 +544,9 @@ impl eframe::App for App {
 
 impl App {
     fn ui_status(&mut self, ui: &mut egui::Ui) {
-        let token_valid = self.state.token_valid.load(Ordering::SeqCst);
+        // token/监控/账号/剩余时长已在顶部状态条常驻显示，这里只保留告警、操作与最近操作
         let pause_status = *self.state.pause_status.lock().unwrap_or_else(|e| e.into_inner());
         let monitor = self.state.monitor.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        let grace = self.state.grace_remaining.load(Ordering::SeqCst);
         let pending = self.state.pending_pause.load(Ordering::SeqCst);
         let last_api = self.state.last_api_result.lock().unwrap_or_else(|e| e.into_inner()).clone();
 
@@ -502,38 +559,21 @@ impl App {
             ui.separator();
         }
 
-        ui.horizontal(|ui| {
-            let (dot, text) = if self.state.token().is_empty() {
-                (tone::muted(ui), "未配置 token")
-            } else if token_valid {
-                (tone::ok(ui), "token 有效")
-            } else {
-                (tone::err(ui), "token 失效（请到「登录」页更新）")
-            };
-            let (resp, painter) = ui.allocate_painter(egui::vec2(14.0, 14.0), egui::Sense::hover());
-            painter.circle_filled(resp.rect.center(), 5.0, dot);
-            ui.label(text);
-        });
-
-        ui.add_space(4.0);
-        ui.label(format!("监控状态：{}", monitor.gui_text()));
-        if let MonitorStatus::Grace(_) = monitor {
-            ui.label(format!("剩余 {grace} 秒"));
-        }
-        ui.label(format!(
-            "账号状态：{}",
-            match pause_status {
-                Some(1) => "已暂停 ⏸".to_string(),
-                Some(0) => "加速中 ▶".to_string(),
-                _ => "未知（点查询获取）".to_string(),
-            }
-        ));
-        // 游戏在跑但账号显示已暂停：多半是用户在客户端手动加速了，
-        // 而客户端的加速会话不会取消「时长暂停」标记（实测时长确实没在扣）
-        if matches!(monitor, MonitorStatus::InGame(_)) && pause_status == Some(1) {
+        // 假暂停告警 / 游戏运行但显示已暂停的说明
+        let fake = self.state.fake_pause.load(Ordering::SeqCst);
+        if fake {
+            ui.colored_label(
+                tone::warn(ui),
+                "⚠ 假暂停：云端标记「已暂停」但时长正在计费消耗。\
+                 空闲时工具会自动重新暂停修复；若反复出现，\
+                 请到雷神客户端手动暂停/恢复一次以刷新服务端状态。",
+            );
+        } else if matches!(monitor, MonitorStatus::InGame(_)) && pause_status == Some(1) {
+            // 游戏在跑但账号显示已暂停：多半是用户在客户端手动加速了，
+            // 而客户端的加速会话不会取消「时长暂停」标记
             ui.colored_label(
                 tone::muted(ui),
-                "提示：当前时长暂停仍在生效，游戏时长未在消耗。\
+                "提示：当前时长暂停标记仍在，剩余时长未变化。\
                  雷神客户端里手动加速不会自动取消暂停；\
                  如需游戏时正常计费，点「恢复加速」或开启设置里的「游戏启动时自动恢复加速」。",
             );
@@ -1018,24 +1058,35 @@ impl App {
             if ui.button("清空显示").clicked() {
                 self.state.log_buf.lock().unwrap_or_else(|e| e.into_inner()).clear();
             }
-        });
-        egui::ScrollArea::vertical()
-            .stick_to_bottom(true)
-            .show(ui, |ui| {
+            if ui.button("复制全部").clicked() {
                 let buf = self.state.log_buf.lock().unwrap_or_else(|e| e.into_inner());
                 let mut text = String::new();
                 for line in buf.iter() {
                     let _ = writeln!(text, "{line}");
                 }
                 drop(buf);
-                let mut ro = text;
-                ui.add(
-                    egui::TextEdit::multiline(&mut ro)
-                        .desired_width(f32::INFINITY)
-                        .desired_rows(24)
-                        .font(egui::TextStyle::Monospace)
-                        .interactive(false),
-                );
+                ui.ctx().copy_text(text);
+                self.logs_copied = Some(std::time::Instant::now());
+            }
+            if self
+                .logs_copied
+                .is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(2))
+            {
+                ui.colored_label(tone::ok(ui), "已复制到剪贴板");
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.small("拖选日志行可选中，Ctrl+C 复制");
+            });
+        });
+        egui::ScrollArea::vertical()
+            .stick_to_bottom(true)
+            .show(ui, |ui| {
+                // 可选中：拖选 + Ctrl+C 复制（默认 label 不可选中）
+                ui.style_mut().interaction.selectable_labels = true;
+                let buf = self.state.log_buf.lock().unwrap_or_else(|e| e.into_inner());
+                for line in buf.iter() {
+                    ui.label(egui::RichText::new(line).monospace());
+                }
             });
     }
 }
