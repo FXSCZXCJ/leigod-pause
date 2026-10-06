@@ -5,7 +5,7 @@
 //! 全部走独立线程，绝不依赖 GUI 循环。GUI 循环只在窗口可见时负责绘制。
 
 use std::collections::VecDeque;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Mutex, RwLock};
@@ -46,6 +46,16 @@ impl MonitorStatus {
             MonitorStatus::PendingPause => "token 已失效，暂停请求挂起，更新 token 后自动执行".into(),
         }
     }
+
+    /// 状态条紧凑文案：窄窗口下保证单行显示；完整文案见 gui_text（HTTP 接口用）
+    pub fn gui_text_short(&self) -> String {
+        match self {
+            MonitorStatus::Idle => "监控中".into(),
+            MonitorStatus::InGame(name) => format!("游戏：{name}"),
+            MonitorStatus::Grace(_) => "宽限中".into(),
+            MonitorStatus::PendingPause => "token 失效，挂起".into(),
+        }
+    }
 }
 
 pub struct AppState {
@@ -63,6 +73,8 @@ pub struct AppState {
     pub remaining_secs: AtomicI64,
     /// remaining_secs 的采样时刻（UNIX 秒）；GUI 在「加速中」按它本地秒级递减
     pub remaining_at: AtomicU64,
+    /// 主窗口上次的位置（物理像素）；显示窗口时恢复，拖动停稳后落盘 window_pos.txt
+    pub window_pos: Mutex<Option<(i32, i32)>>,
     /// 监控状态机当前状态
     pub monitor: Mutex<MonitorStatus>,
     /// 宽限期剩余秒（GUI 倒计时显示用）
@@ -99,6 +111,7 @@ impl AppState {
             fake_pause: AtomicBool::new(false),
             remaining_secs: AtomicI64::new(-1),
             remaining_at: AtomicU64::new(0),
+            window_pos: Mutex::new(None),
             monitor: Mutex::new(MonitorStatus::Idle),
             grace_remaining: AtomicU64::new(0),
             pending_pause: AtomicBool::new(false),
@@ -149,6 +162,12 @@ impl AppState {
             };
             let hwnd = HWND(h as *mut std::ffi::c_void);
             unsafe {
+                // 隐藏启动的窗口停在屏幕外（规避 eframe 首帧闪现），显示前移回上次位置
+                let saved = *self.window_pos.lock().unwrap_or_else(|e| e.into_inner());
+                match saved.filter(|p| pos_on_screen(*p)) {
+                    Some(p) => move_window_to(h, p),
+                    None => center_window(h),
+                }
                 let _ = ShowWindow(hwnd, SW_SHOW);
                 let _ = SetForegroundWindow(hwnd);
             }
@@ -199,6 +218,71 @@ impl AppState {
 pub fn fmt_hms(total_secs: i64) -> String {
     let t = total_secs.max(0);
     format!("{:02}时{:02}分{:02}秒", t / 3600, (t % 3600) / 60, t % 60)
+}
+
+/// 主窗口位置记忆的落盘文件（exe 同目录）
+fn window_pos_file(config_path: &Path) -> PathBuf {
+    config_path.with_file_name("window_pos.txt")
+}
+
+/// 位置是否大致落在主屏可见范围内（过滤屏幕外的隐藏位置与多屏拖出的离谱值）
+pub fn pos_on_screen(pos: (i32, i32)) -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN,
+    };
+    unsafe {
+        let (sw, sh) = (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
+        pos.0 >= -50 && pos.1 >= -50 && pos.0 < sw - 100 && pos.1 < sh - 100
+    }
+}
+
+/// 把原生窗口移到指定物理像素位置（不改大小与 Z 序）
+pub fn move_window_to(hwnd_isize: isize, pos: (i32, i32)) {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SetWindowPos, HWND_TOP, SWP_NOSIZE, SWP_NOZORDER,
+    };
+    unsafe {
+        let _ = SetWindowPos(
+            HWND(hwnd_isize as *mut std::ffi::c_void),
+            HWND_TOP,
+            pos.0,
+            pos.1,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOZORDER,
+        );
+    }
+}
+
+/// 把窗口移到主屏中央（无记忆位置时的兜底）
+pub fn center_window(hwnd_isize: isize) {
+    use windows::Win32::Foundation::{HWND, RECT};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetSystemMetrics, GetWindowRect, SM_CXSCREEN, SM_CYSCREEN,
+    };
+    let hwnd = HWND(hwnd_isize as *mut std::ffi::c_void);
+    unsafe {
+        let sw = GetSystemMetrics(SM_CXSCREEN);
+        let sh = GetSystemMetrics(SM_CYSCREEN);
+        let mut rect = RECT::default();
+        if GetWindowRect(hwnd, &mut rect).is_ok() {
+            let w = (rect.right - rect.left).max(0);
+            let h = (rect.bottom - rect.top).max(0);
+            move_window_to(hwnd_isize, (((sw - w) / 2).max(0), ((sh - h) / 2).max(0)));
+        }
+    }
+}
+
+/// 读取/写入记忆的窗口位置（"x,y" 物理像素）
+pub fn load_window_pos_file(config_path: &Path) -> Option<(i32, i32)> {
+    let text = std::fs::read_to_string(window_pos_file(config_path)).ok()?;
+    let (x, y) = text.trim().split_once(',')?;
+    Some((x.trim().parse().ok()?, y.trim().parse().ok()?))
+}
+
+pub fn save_window_pos_file(config_path: &Path, pos: (i32, i32)) {
+    let _ = std::fs::write(window_pos_file(config_path), format!("{},{}", pos.0, pos.1));
 }
 
 #[cfg(test)]

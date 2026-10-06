@@ -84,6 +84,7 @@ fn main() {
         Some("steam") => cli_steam(),
         Some("autostart") => cli_autostart(positional.get(1).map(|s| s.as_str())),
         Some("notify") => cli_notify(positional.get(1).map(|s| s.as_str())),
+        Some("timelog") => cli_time_log(&config_path),
         None => run_gui(&config_path, show_window, console_mode, stdio_state),
         Some(other) => {
             eprintln!("未知命令 {other}");
@@ -184,6 +185,7 @@ fn print_help() {
          \x20 leigod-pause.exe code <n>      用验证码更新 token\n\
          \x20 leigod-pause.exe status        查询本机接口状态\n\
          \x20 leigod-pause.exe notify [文本]  发一条测试通知（验证通知图标）\n\
+         \x20 leigod-pause.exe timelog      查询云端时长明细\n\
          验证码自动接口: POST http://127.0.0.1:{{port}}/token/sms | /token/code  或  命名管道 \\\\.\\pipe\\leigod-sms-code",
         v = env!("CARGO_PKG_VERSION")
     );
@@ -280,9 +282,36 @@ fn cli_steam() {
     }
 }
 
+/// 拉取并打印云端时长明细（验证接口与数据展示）
+fn cli_time_log(config_path: &std::path::Path) {
+    let state = make_state(config_path);
+    match actions::fetch_time_log(&state, 1) {
+        Ok(p) => {
+            println!(
+                "共 {} 条（第 {}/{} 页）",
+                p.total, p.current_page, p.last_page
+            );
+            for e in &p.entries {
+                println!(
+                    "{}  {:<8} → {}  {:<8} 消耗 {}  剩余 {}",
+                    e.recover_time,
+                    e.recover_tag,
+                    if e.pause_time.is_empty() { "消耗中…".to_string() } else { e.pause_time.clone() },
+                    if e.pause_tag.is_empty() { "—".to_string() } else { e.pause_tag.clone() },
+                    crate::state::fmt_hms(e.reduce_secs),
+                    crate::state::fmt_hms(e.pause_surplus_secs),
+                );
+            }
+        }
+        Err(e) => {
+            eprintln!("查询失败: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
 /// 发一条 Windows 通知（测试通知图标；顺带补齐/刷新 AUMID 快捷方式与图标资源）
-fn cli_notify(text: Option<&str>) {
-    let aumid = events::init_toast_identity();
+fn cli_notify(text: Option<&str>) {    let aumid = events::init_toast_identity();
     let body = text.unwrap_or("通知图标测试");
     let r = tauri_winrt_notification::Toast::new(&aumid)
         .title("雷神自动暂停")
@@ -371,6 +400,9 @@ fn run_gui(
     }
 
     let state = make_state(config_path);
+    // 载入记忆的主窗口位置（显示窗口时恢复到上次位置）
+    *state.window_pos.lock().unwrap_or_else(|e| e.into_inner()) =
+        state::load_window_pos_file(config_path);
     log(&state, &format!("leigod-pause v{} 启动", env!("CARGO_PKG_VERSION")));
     log(
         &state,
@@ -428,10 +460,21 @@ fn run_gui(
     let native_options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title(format!("雷神自动暂停 v{}", env!("CARGO_PKG_VERSION")))
-            .with_inner_size([440.0, 520.0])
+            .with_inner_size([440.0, 560.0])
             .with_icon(window_icon())
-            // 创建时就定好可见性：若等到 App::new 里再隐藏，窗口会先显示一帧造成闪窗
+            // 创建时就定好可见性。注意 eframe 在首帧渲染后会无条件 set_visible(true)
+            // （egui #2279 防白闪），隐藏启动仍会闪现约一帧——因此配合 window_builder
+            // 钩子把隐藏启动的窗口放到屏幕外，让那次闪现不可见；显示时由
+            // native_show_window 把窗口移回屏幕中央。
             .with_visible(start_visible),
+        centered: start_visible,
+        window_builder: Some(Box::new(move |vb| {
+            if start_visible {
+                vb
+            } else {
+                vb.with_position([-32000.0, -32000.0])
+            }
+        })),
         ..Default::default()
     };
 

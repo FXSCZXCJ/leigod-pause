@@ -17,14 +17,17 @@ use crate::tray;
 #[derive(PartialEq)]
 enum Page {
     Status,
+    TimeLog,
     Settings,
     Login,
     Logs,
 }
 
-/// 浏览器控制台里取 account_token 的命令（登录页「复制命令」按钮用）
+/// 浏览器控制台里取 account_token 的命令（登录页「复制命令」按钮用）。
+/// 用控制台专用的 copy() 直接把 token 放进剪贴板：粘贴执行后无需再手动
+/// 复制控制台输出，软件的剪贴板监听可全自动接手。
 const TOKEN_CONSOLE_CMD: &str =
-    r#"JSON.parse(localStorage.getItem("account_token")).account_token"#;
+    r#"copy(JSON.parse(localStorage.getItem("account_token")).account_token)"#;
 
 /// 语义色：egui 内置的 LIGHT_BLUE / LIGHT_GREEN 在浅色主题的白底上太淡，
 /// 这里按当前主题（深/浅）各给一套，保证两边都看得清。
@@ -101,6 +104,12 @@ pub struct App {
     proc_list: Arc<Mutex<Vec<(String, String)>>>,
     proc_scanning: Arc<std::sync::atomic::AtomicBool>,
     proc_scanned: Arc<std::sync::atomic::AtomicBool>,
+    // 时长明细（云端恢复/暂停记录）
+    time_log: Arc<Mutex<crate::api::TimeLogPage>>,
+    time_log_msg: Arc<Mutex<String>>,
+    time_log_loading: Arc<std::sync::atomic::AtomicBool>,
+    time_log_page: usize,
+    time_log_loaded: bool,
 
     // 登录页
     phone: String,
@@ -112,10 +121,8 @@ pub struct App {
     copied_at: Option<std::time::Instant>,
     /// 日志页「复制全部」的已复制提示时间
     logs_copied: Option<std::time::Instant>,
-    /// 最近一次复制是否由「进入登录页自动复制」触发（提示文案不同）
-    copied_auto: bool,
-    /// 本次停留在登录页是否已自动复制过（避免每帧重复复制）
-    login_auto_copied: bool,
+    /// 主窗口位置最后一次变动的时间（拖动停稳后落盘）
+    last_move: Option<std::time::Instant>,
     /// 剪贴板监听到期时间（Some 且未过期 = 正在监听）
     clip_deadline: Arc<Mutex<Option<std::time::Instant>>>,
 }
@@ -191,6 +198,11 @@ impl App {
             proc_list: Arc::new(Mutex::new(Vec::new())),
             proc_scanning: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             proc_scanned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            time_log: Arc::new(Mutex::new(crate::api::TimeLogPage::default())),
+            time_log_msg: Arc::new(Mutex::new(String::new())),
+            time_log_loading: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            time_log_page: 1,
+            time_log_loaded: false,
             phone: String::new(),
             sms_code: String::new(),
             token_paste: String::new(),
@@ -198,8 +210,7 @@ impl App {
             login_busy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             copied_at: None,
             logs_copied: None,
-            copied_auto: false,
-            login_auto_copied: false,
+            last_move: None,
             clip_deadline: Arc::new(Mutex::new(None)),
         };
         app.tray = tray::build(&app.state.monitor.lock().unwrap_or_else(|e| e.into_inner()).tooltip_text()).ok();
@@ -213,7 +224,24 @@ impl App {
             }
         })();
         app.state.set_gui_handles(cc.egui_ctx.clone(), app.native_hwnd);
+        // --show 显式启动：eframe 先把窗口建在屏幕中央，有记忆位置则立即移过去
+        if start_visible {
+            let saved = *app
+                .state
+                .window_pos
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if let Some(p) = saved.filter(|p| crate::state::pos_on_screen(*p)) {
+                if let Some(h) = app.native_hwnd {
+                    crate::state::move_window_to(h, p);
+                }
+            }
+        }
         Self::install_cjk_font(&cc.egui_ctx);
+        // 统一滚动条样式：非悬浮（占独立车道），各页面滚动条不再盖住右侧按钮
+        cc.egui_ctx.style_mut(|style| {
+            style.spacing.scroll.floating = false;
+        });
         // 剪贴板监听线程常驻，靠 deadline 决定是否工作（见 clipboard.rs）
         crate::clipboard::spawn_watcher(
             app.state.clone(),
@@ -241,28 +269,20 @@ impl App {
     }
 
     /// 把取 token 的命令复制到剪贴板；auto=true 表示「进登录页自动复制」触发。
-    /// 剪贴板监听只在**手动点击「复制命令」按钮**后开启（进入登录页只复制、不监听），
-    /// 且需设置里开着「剪贴板自动识别 token」。
-    fn copy_token_cmd(&mut self, ctx: &egui::Context, auto: bool) {
+    /// 把取 token 命令放进剪贴板。剪贴板监听只在**手动点击「复制命令」按钮**
+    /// 后开启，且需设置里开着「剪贴板自动识别 token」。
+    fn copy_token_cmd(&mut self, ctx: &egui::Context) {
         ctx.copy_text(TOKEN_CONSOLE_CMD.to_string());
         self.copied_at = Some(std::time::Instant::now());
-        self.copied_auto = auto;
-        let watch_on = !auto
-            && (self.clip_watch || self.cfg.read().unwrap_or_else(|e| e.into_inner()).clip_watch);
+        let watch_on =
+            self.clip_watch || self.cfg.read().unwrap_or_else(|e| e.into_inner()).clip_watch;
         if watch_on {
             *self.clip_deadline.lock().unwrap_or_else(|e| e.into_inner()) = Some(
                 std::time::Instant::now()
                     + std::time::Duration::from_secs(crate::clipboard::WATCH_SECONDS),
             );
         }
-        log(
-            &self.state,
-            if auto {
-                "进入登录页：取 token 命令已自动复制到剪贴板"
-            } else {
-                "已复制取 token 命令到剪贴板"
-            },
-        );
+        log(&self.state, "已复制取 token 命令到剪贴板");
         if watch_on {
             log(
                 &self.state,
@@ -415,6 +435,28 @@ impl eframe::App for App {
             self.tooltip_cache = tip;
         }
 
+        // ---- 窗口位置记忆：可见时跟踪，拖动停稳 800ms 后落盘 ----
+        if let Some(rect) = ctx.input(|i| i.viewport().outer_rect) {
+            let pos = (rect.left() as i32, rect.top() as i32);
+            // 屏幕外的隐藏位置不记录
+            if pos.0 >= 0 && pos.1 >= 0 {
+                let mut cur = self
+                    .state
+                    .window_pos
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                if *cur != Some(pos) {
+                    *cur = Some(pos);
+                    self.last_move = Some(std::time::Instant::now());
+                } else if let Some(t) = self.last_move {
+                    if t.elapsed() >= std::time::Duration::from_millis(800) {
+                        crate::state::save_window_pos_file(&self.state.config_path, pos);
+                        self.last_move = None;
+                    }
+                }
+            }
+        }
+
         // ---- 拦截窗口关闭：点 X 隐藏到托盘而非退出 ----
         let close_requested = ctx.input(|i| {
             i.viewport().close_requested()
@@ -432,10 +474,6 @@ impl eframe::App for App {
         if !self.settings_loaded {
             self.load_settings_buf();
         }
-        // 离开登录页后，下次再进来重新自动复制一次命令
-        if self.page != Page::Login {
-            self.login_auto_copied = false;
-        }
         if self.phone.is_empty() {
             self.phone = self.cfg.read().unwrap_or_else(|e| e.into_inner()).uname.clone();
         }
@@ -445,6 +483,7 @@ impl eframe::App for App {
             ui.horizontal(|ui| {
                 ui.add_space(8.0);
                 ui.selectable_value(&mut self.page, Page::Status, "状态");
+                ui.selectable_value(&mut self.page, Page::TimeLog, "明细");
                 ui.selectable_value(&mut self.page, Page::Settings, "设置");
                 ui.selectable_value(&mut self.page, Page::Login, "登录");
                 ui.selectable_value(&mut self.page, Page::Logs, "日志");
@@ -479,7 +518,7 @@ impl eframe::App for App {
                     .unwrap_or_else(|e| e.into_inner())
                     .clone();
                 let grace = self.state.grace_remaining.load(Ordering::SeqCst);
-                let mut mon_text = format!("监控：{}", monitor.gui_text());
+                let mut mon_text = format!("监控：{}", monitor.gui_text_short());
                 if matches!(monitor, MonitorStatus::Grace(_)) {
                     mon_text.push_str(&format!("（剩 {grace} 秒）"));
                 }
@@ -507,31 +546,36 @@ impl eframe::App for App {
             ui.add_space(2.0);
         });
 
-        // ---- 底栏：最新一条日志，点击进日志页 ----
+        // ---- 底栏：最新一条日志，整条可点击 → 跳日志页 ----
         egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
+            let latest = self
+                .state
+                .log_buf
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .back()
+                .cloned()
+                .unwrap_or_else(|| "（暂无日志）".to_string());
             ui.horizontal(|ui| {
-                if ui
-                    .selectable_label(self.page == Page::Logs, "🗒 日志")
-                    .clicked()
-                {
-                    self.page = Page::Logs;
-                }
-                let latest = self
-                    .state
-                    .log_buf
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .back()
-                    .cloned()
-                    .unwrap_or_else(|| "（暂无日志）".to_string());
-                ui.add(
-                    egui::Label::new(egui::RichText::new(latest).small().weak()).truncate(),
-                );
+                ui.add_space(8.0);
+                ui.small(egui::RichText::new(latest).weak());
             });
+            let resp = ui
+                .interact(
+                    ui.max_rect(),
+                    egui::Id::new("status_bar_click"),
+                    egui::Sense::click(),
+                )
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text("点击查看完整日志");
+            if resp.clicked() {
+                self.page = Page::Logs;
+            }
         });
 
         egui::CentralPanel::default().show(ctx, |ui| match self.page {
             Page::Status => self.ui_status(ui),
+            Page::TimeLog => self.ui_time_log(ui),
             Page::Settings => self.ui_settings(ui),
             Page::Login => self.ui_login(ui),
             Page::Logs => self.ui_logs(ui),
@@ -578,7 +622,6 @@ impl App {
                  如需游戏时正常计费，点「恢复加速」或开启设置里的「游戏启动时自动恢复加速」。",
             );
         }
-        ui.separator();
 
         ui.horizontal_wrapped(|ui| {
             if ui.button("立即暂停").clicked() {
@@ -696,6 +739,241 @@ impl App {
             *list_slot.lock().unwrap_or_else(|e| e.into_inner()) = rows;
             scanned.store(true, Ordering::SeqCst);
             scanning.store(false, Ordering::SeqCst);
+            ctx.request_repaint();
+        });
+    }
+
+    fn ui_time_log(&mut self, ui: &mut egui::Ui) {
+        // 首次进入自动加载
+        if !self.time_log_loaded {
+            self.time_log_loaded = true;
+            self.spawn_time_log_fetch();
+        }
+        let loading = self.time_log_loading.load(Ordering::SeqCst);
+        let (cur, last, total) = {
+            let tl = self.time_log.lock().unwrap_or_else(|e| e.into_inner());
+            (tl.current_page, tl.last_page, tl.total)
+        };
+        ui.horizontal(|ui| {
+            if ui.add_enabled(!loading, egui::Button::new("刷新")).clicked() {
+                self.spawn_time_log_fetch();
+            }
+            if loading {
+                ui.small("查询中…");
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .add_enabled(!loading && cur < last, egui::Button::new("下一页"))
+                    .clicked()
+                {
+                    self.time_log_page = (cur + 1).min(last.max(1));
+                    self.spawn_time_log_fetch();
+                }
+                ui.small(format!("第 {cur}/{last} 页 · 共 {total} 条"));
+                if ui
+                    .add_enabled(!loading && cur > 1, egui::Button::new("上一页"))
+                    .clicked()
+                {
+                    self.time_log_page = cur.saturating_sub(1).max(1);
+                    self.spawn_time_log_fetch();
+                }
+            });
+        });
+        let msg = self
+            .time_log_msg
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        if !msg.is_empty() {
+            ui.colored_label(tone::warn(ui), &msg);
+        }
+        ui.add_space(4.0);
+        let entries = self
+            .time_log
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entries
+            .clone();
+        if entries.is_empty() && !loading {
+            ui.small("暂无记录（点「刷新」查询云端时长明细）");
+            return;
+        }
+        egui::ScrollArea::vertical()
+            .hscroll(true)
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                // 每条记录占两行（开行/停行）：同一行内各列由 Grid 统一起排，
+                // 时间与设备端才能逐行水平对齐——等宽字体与普通字体行高有微差，
+                // 两行塞一个单元格时第二行必然越错越多
+                let rows = (entries.len().max(1) * 2) as f32;
+                let row_h = ((ui.available_height() - 26.0) / rows).clamp(22.0, 40.0);
+                // 小号字体单行行高：Grid 单元格内容默认顶格排，垂直居中要手动按行高留白
+                let line_h = ui.text_style_height(&egui::TextStyle::Small);
+                egui::Grid::new("time_log_grid")
+                    .spacing([10.0, 0.0])
+                    // 解除列宽软上限（默认很窄会照时间戳换行），列宽按内容自适应
+                    .max_col_width(f32::INFINITY)
+                    .striped(true)
+                    .show(ui, |ui| {
+                        let head = |ui: &mut egui::Ui, s: &str, center: bool| {
+                            ui.set_min_height(26.0);
+                            if center {
+                                ui.vertical_centered(|ui| {
+                                    ui.strong(s);
+                                });
+                            } else {
+                                ui.strong(s);
+                            }
+                        };
+                        head(ui, "时间", false);
+                        head(ui, "设备端", false);
+                        head(ui, "消耗时长", true);
+                        head(ui, "剩余时长", true);
+                        ui.end_row();
+                        for e in &entries {
+                            // 单行单元格：所有列用同一居中公式（item_spacing 清零，
+                            // add_space 无隐式叠加）→ 同一行内各列绝对水平对齐。
+                            // center=true 时列内水平居中（消耗/剩余），否则左对齐
+                            let cell =
+                                |ui: &mut egui::Ui, center: bool, content: &dyn Fn(&mut egui::Ui)| {
+                                    let inner = |ui: &mut egui::Ui| {
+                                        ui.set_min_height(row_h);
+                                        ui.spacing_mut().item_spacing.y = 0.0;
+                                        ui.add_space(((row_h - line_h) * 0.5).max(0.0));
+                                        content(ui);
+                                    };
+                                    if center {
+                                        ui.vertical_centered(inner);
+                                    } else {
+                                        ui.vertical(inner);
+                                    }
+                                };
+                            // 单元格里的嵌套作用域（vertical/horizontal）会丢失网格上下文，
+                            // egui 对 vertical 布局默认强制 Wrap，且换行宽度取上一帧列宽，
+                            // 形成"越换越窄"的反馈循环——必须显式 Extend 禁止换行
+                            let nowrap = |ui: &mut egui::Ui, text: egui::RichText| {
+                                ui.add(egui::Label::new(text).wrap_mode(egui::TextWrapMode::Extend));
+                            };
+                            // 设备端文本垫到约 10 个汉字宽（ASCII 记半字，不足补全角
+                            // 空格）——全角空格不可见只撑列宽，短内容时列也保持稳定宽度
+                            let pad_tag = |s: &str| -> String {
+                                let units: f32 = s
+                                    .chars()
+                                    .map(|c| if c.is_ascii() { 0.5 } else { 1.0 })
+                                    .sum();
+                                let mut out = s.to_string();
+                                let mut n = ((10.0 - units).ceil() as i32).max(0);
+                                while n > 0 {
+                                    out.push('　');
+                                    n -= 1;
+                                }
+                                out
+                            };
+                            // ---- 开行：时间 + 设备端（消耗/剩余留空占位）----
+                            cell(ui, false, &|ui| {
+                                nowrap(
+                                    ui,
+                                    egui::RichText::new(format!("开 {}", e.recover_time))
+                                        .small()
+                                        .monospace(),
+                                );
+                            });
+                            cell(ui, false, &|ui| {
+                                nowrap(
+                                    ui,
+                                    egui::RichText::new(pad_tag(&e.recover_tag)).small(),
+                                );
+                            });
+                            cell(ui, true, &|ui| {
+                                nowrap(ui, egui::RichText::new(""));
+                            });
+                            cell(ui, true, &|ui| {
+                                nowrap(ui, egui::RichText::new(""));
+                            });
+                            ui.end_row();
+                            // ---- 停行：时间 + 设备端 + 消耗 + 剩余（剩余即停时刻的值）----
+                            if e.pause_time.is_empty() {
+                                cell(ui, false, &|ui| {
+                                    nowrap(
+                                        ui,
+                                        egui::RichText::new("停 计费中…")
+                                            .small()
+                                            .color(tone::warn(ui)),
+                                    );
+                                });
+                            } else {
+                                cell(ui, false, &|ui| {
+                                    nowrap(
+                                        ui,
+                                        egui::RichText::new(format!("停 {}", e.pause_time))
+                                            .small()
+                                            .monospace(),
+                                    );
+                                });
+                            }
+                            cell(ui, false, &|ui| {
+                                if e.pause_tag.is_empty() {
+                                    nowrap(ui, egui::RichText::new(pad_tag("—")).small());
+                                } else {
+                                    nowrap(
+                                        ui,
+                                        egui::RichText::new(pad_tag(&e.pause_tag)).small(),
+                                    );
+                                }
+                            });
+                            cell(ui, true, &|ui| {
+                                if e.reduce_secs > 0 {
+                                    nowrap(
+                                        ui,
+                                        egui::RichText::new(crate::state::fmt_hms(e.reduce_secs))
+                                            .small(),
+                                    );
+                                } else {
+                                    nowrap(ui, egui::RichText::new("—").small());
+                                }
+                            });
+                            cell(ui, true, &|ui| {
+                                if e.pause_surplus_secs > 0 {
+                                    nowrap(
+                                        ui,
+                                        egui::RichText::new(crate::state::fmt_hms(
+                                            e.pause_surplus_secs,
+                                        ))
+                                        .small(),
+                                    );
+                                } else {
+                                    nowrap(ui, egui::RichText::new("—").small());
+                                }
+                            });
+                            ui.end_row();
+                        }
+                    });
+            });
+    }
+
+    fn spawn_time_log_fetch(&mut self) {
+        if self.time_log_loading.load(Ordering::SeqCst) {
+            return;
+        }
+        self.time_log_loading.store(true, Ordering::SeqCst);
+        *self.time_log_msg.lock().unwrap_or_else(|e| e.into_inner()) = String::new();
+        let state = self.state.clone();
+        let ctx = self.ctx.clone();
+        let msg_slot = self.time_log_msg.clone();
+        let slot = self.time_log.clone();
+        let loading = self.time_log_loading.clone();
+        let page = self.time_log_page;
+        std::thread::spawn(move || {
+            match actions::fetch_time_log(&state, page) {
+                Ok(p) => {
+                    *slot.lock().unwrap_or_else(|e| e.into_inner()) = p;
+                }
+                Err(e) => {
+                    *msg_slot.lock().unwrap_or_else(|e| e.into_inner()) =
+                        format!("查询失败：{e}");
+                }
+            }
+            loading.store(false, Ordering::SeqCst);
             ctx.request_repaint();
         });
     }
@@ -940,12 +1218,6 @@ impl App {
     }
 
     fn ui_login(&mut self, ui: &mut egui::Ui) {
-        // 进登录页自动把命令放进剪贴板（本次停留只做一次，避免每帧覆盖剪贴板）
-        if !self.login_auto_copied {
-            self.login_auto_copied = true;
-            let ctx = ui.ctx().clone();
-            self.copy_token_cmd(&ctx, true);
-        }
         ui.heading("短信验证码登录");
         ui.label("token 失效后在此重新登录；验证码会以短信发送到手机。");
         ui.add_space(6.0);
@@ -999,19 +1271,22 @@ impl App {
         );
         ui.horizontal(|ui| {
             let clip_watch_on = self.clip_watch || self.cfg.read().unwrap_or_else(|e| e.into_inner()).clip_watch;
+            if ui.button("🌐 打开雷神官网").clicked() {
+                actions::open_url(
+                    &self.state,
+                    "https://www.leigod.com/user/",
+                );
+            }
             if ui.button("📋 复制命令").clicked() {
                 let ctx = ui.ctx().clone();
-                self.copy_token_cmd(&ctx, false);
+                self.copy_token_cmd(&ctx);
             }
             if let Some(t) = self.copied_at {
-                let show_for = if self.copied_auto { 5.0 } else { 2.5 };
-                if t.elapsed().as_secs_f32() < show_for {
-                    let hint = if self.copied_auto {
-                        "已自动复制命令：到浏览器 F12 控制台粘贴回车，再把结果复制回来"
-                    } else if clip_watch_on {
-                        "已复制，粘贴到浏览器控制台回车，结果复制回来即可"
+                if t.elapsed().as_secs_f32() < 2.5 {
+                    let hint = if clip_watch_on {
+                        "已复制，粘贴到浏览器控制台回车即可——token 自动进剪贴板，监听窗口内自动识别"
                     } else {
-                        "已复制，粘贴到浏览器控制台回车（可在设置里开启剪贴板自动识别）"
+                        "已复制，粘贴到浏览器控制台回车，token 会进剪贴板（可粘贴到下方输入框，或开启剪贴板自动识别）"
                     };
                     ui.colored_label(tone::ok(ui), hint);
                 }
